@@ -1,0 +1,650 @@
+/*
+ * style.css — Ecosystem X: The Last Balance
+ *
+ * Architecture Law 1: the canvas is the game. Panels overlay it; they never replace it.
+ * Rule 01: plain CSS3 only — no frameworks, no preprocessors.
+ *
+ * CSS variables taken verbatim from canvas-viewport.md skill.
+ * Never hardcode these hex values elsewhere — always reference the variable.
+ */
+
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --bg-dark:       #101820;
+  --tile-healthy:  #1a9e6b;
+  --tile-toxic:    #5c4a1e;
+  --accent:        #f0a500;
+  --text-light:    #f5f0e8;
+  --danger:        #c0392b;
+  --edge:          #7fd1ff;
+
+  /* UI chrome */
+  --hud-height:    48px;
+  --panel-bg:      rgba(16, 24, 32, 0.94);
+  --panel-border:  rgba(240, 165, 0, 0.35);
+  --panel-radius:  8px;
+
+  /* Health tier badge colours */
+  --tier-toxic:      #8b2500;
+  --tier-degraded:   #7a5c00;
+  --tier-recovering: #1a6040;
+  --tier-pristine:   #0d7a3e;
+
+  /* Typography */
+  --font-main:  'Courier New', Courier, monospace;
+  --font-size:  13px;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-dark);
+  color: var(--text-light);
+  font-family: var(--font-main);
+  font-size: var(--font-size);
+}
+
+/* ── Game container (fills the viewport) ──────────────────────────────────── */
+#game-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: stretch;
+}
+
+/* ── Canvas — one viewport, full area ─────────────────────────────────────── */
+#game {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /*
+   * Canvas pixel dimensions are set in main.js with DPI scaling.
+   * CSS sizing controls layout; canvas.width/height control pixel resolution.
+   */
+  image-rendering: pixelated;   /* keep tile art crisp when upscaled */
+  image-rendering: crisp-edges;
+  background: var(--bg-dark);
+  cursor: crosshair;
+  outline: none;
+}
+
+#game:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Overlay container (panels sit above the canvas) ──────────────────────── */
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* transparent until a panel is shown */
+  z-index: 10;
+}
+
+#overlay:not([hidden]) {
+  pointer-events: auto;
+}
+
+/* Semi-opaque backdrop when a panel is open */
+#overlay:not([hidden])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* ── Shared panel card styles ──────────────────────────────────────────────── */
+.panel {
+  position: relative;     /* above the ::before backdrop */
+  z-index: 1;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  padding: 20px 24px;
+  min-width: 320px;
+  max-width: min(520px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  color: var(--text-light);
+  font-family: var(--font-main);
+}
+
+.panel h2 {
+  font-size: 1.1em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 8px;
+}
+
+.panel p, .panel li {
+  line-height: 1.6;
+  font-size: 0.92em;
+  margin-bottom: 6px;
+}
+
+.panel ul {
+  padding-left: 16px;
+}
+
+/* Close / back button */
+.panel-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: var(--text-light);
+  font-size: 1.1em;
+  cursor: pointer;
+  opacity: 0.7;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.panel-close:hover,
+.panel-close:focus {
+  opacity: 1;
+  outline: 1px solid var(--accent);
+}
+
+/* ── Action buttons (vendor / interventions) ───────────────────────────────── */
+.btn {
+  display: inline-block;
+  padding: 7px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-main);
+  font-size: 0.88em;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, color 0.15s;
+  margin: 4px 4px 4px 0;
+}
+
+.btn:hover,
+.btn:focus {
+  background: var(--accent);
+  color: var(--bg-dark);
+  outline: none;
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger:hover,
+.btn-danger:focus {
+  background: var(--danger);
+  color: var(--text-light);
+}
+
+/* ── Start / Win / Lose cards ─────────────────────────────────────────────── */
+.card {
+  text-align: center;
+}
+
+.card h1 {
+  font-size: 1.6em;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
+.card.lose h1 {
+  color: var(--danger);
+}
+
+.card.win h1 {
+  color: var(--tile-healthy);
+}
+
+.card p {
+  font-size: 0.95em;
+  opacity: 0.85;
+  margin-bottom: 16px;
+  max-width: 380px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.card .btn {
+  margin-top: 8px;
+  font-size: 1em;
+  padding: 10px 24px;
+}
+
+/* ── Health tier badge (used in HUD canvas fallback & panels) ──────────────── */
+.tier-Toxic      { color: #ff6b4a; }
+.tier-Degraded   { color: #f0a500; }
+.tier-Recovering { color: #4ccea0; }
+.tier-Pristine   { color: #1a9e6b; }
+
+/* ── Field Notebook panel specifics ───────────────────────────────────────── */
+.notebook-entry {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding: 8px 0;
+}
+
+.notebook-entry .species-name {
+  color: var(--accent);
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.notebook-entry .codex-text {
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+
+/* ── Vendor panel specifics ────────────────────────────────────────────────── */
+.vendor-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding: 8px 0;
+}
+
+.vendor-item .item-name {
+  font-size: 0.95em;
+}
+
+.vendor-item .item-price {
+  color: var(--accent);
+  font-size: 0.9em;
+  min-width: 64px;
+  text-align: right;
+  margin-right: 10px;
+}
+
+/* ── btn-sm / btn-secondary / btn-disabled ────────────────────────────────── */
+.btn-sm {
+  padding: 3px 9px;
+  font-size: 0.82em;
+}
+
+.btn-secondary {
+  border-color: rgba(240,165,0,0.4);
+  color: rgba(240,165,0,0.7);
+}
+
+.btn-secondary:hover,
+.btn-secondary:focus {
+  background: rgba(240,165,0,0.15);
+  color: var(--accent);
+}
+
+.btn-disabled,
+.btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Toast notification ────────────────────────────────────────────────────── */
+.eco-toast {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(16,24,32,0.95);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-family: var(--font-main);
+  font-size: 0.88em;
+  color: var(--text-light);
+  white-space: pre-line;
+  max-width: min(480px, 88vw);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+  z-index: 20;
+}
+
+.eco-toast-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.eco-toast-success { border-color: #4ccea0; color: #4ccea0; }
+.eco-toast-warning { border-color: #f0a500; color: #f0a500; }
+.eco-toast-error   { border-color: var(--danger); color: var(--danger); }
+.eco-toast-info    { border-color: #7fd1ff; color: #b8e8ff; }
+
+/* ── Field Notebook — rich panel ──────────────────────────────────────────── */
+.nb-panel {
+  min-width: min(560px, 90vw);
+  max-width: min(640px, 94vw);
+}
+
+.nb-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.nb-header h2 {
+  margin: 0;
+  padding: 0;
+  border: none;
+  font-size: 1.1em;
+}
+
+.nb-stats-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 0.82em;
+  opacity: 0.8;
+  margin-bottom: 14px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+}
+
+.nb-section {
+  margin-bottom: 18px;
+}
+
+.nb-section h3 {
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
+
+.nb-nodes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nb-node-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 5px;
+  padding: 10px 12px;
+}
+
+.nb-node-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.nb-kind-badge {
+  font-size: 0.72em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  letter-spacing: 0.06em;
+}
+
+.nb-node-name {
+  font-size: 0.95em;
+  color: var(--text-light);
+}
+
+.nb-status {
+  font-size: 0.75em;
+  margin-left: auto;
+}
+
+.nb-bar-track {
+  height: 6px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 3px;
+}
+
+.nb-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.nb-pop-label {
+  font-size: 0.75em;
+  opacity: 0.6;
+}
+
+.nb-codex {
+  font-size: 0.78em;
+  opacity: 0.65;
+  font-style: italic;
+  margin-top: 6px;
+  line-height: 1.5;
+  border-left: 2px solid rgba(240,165,0,0.3);
+  padding-left: 8px;
+}
+
+.nb-edge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nb-edge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.83em;
+  padding: 3px 6px;
+  background: rgba(127,209,255,0.05);
+  border-radius: 3px;
+}
+
+.nb-edge-from  { color: #b8e8ff; }
+.nb-edge-arrow { color: rgba(255,255,255,0.3); }
+.nb-edge-to    { color: #e8c870; }
+.nb-edge-beta  { margin-left: auto; opacity: 0.5; font-size: 0.8em; }
+
+.nb-footer {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+  margin-top: 4px;
+}
+
+/* ── Vendor / Intervention Store panel ────────────────────────────────────── */
+.vendor-panel {
+  min-width: min(540px, 90vw);
+  max-width: min(620px, 94vw);
+}
+
+.vendor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.vendor-header h2 {
+  margin: 0;
+  padding: 0;
+  border: none;
+  font-size: 1.1em;
+}
+
+.vendor-tier-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.83em;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.tier-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 0.78em;
+  letter-spacing: 0.08em;
+  font-weight: bold;
+}
+
+.vendor-resources {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.vendor-npc-line {
+  background: rgba(255,255,255,0.03);
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  font-size: 0.85em;
+  opacity: 0.85;
+  border-radius: 0 4px 4px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.npc-icon {
+  font-size: 1.2em;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.vendor-items {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vendor-item {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: block; /* override old flex from legacy style */
+}
+
+.vendor-item-disabled {
+  opacity: 0.5;
+}
+
+.vendor-item-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.vendor-icon {
+  font-size: 1.3em;
+}
+
+.vendor-name {
+  font-size: 0.95em;
+}
+
+.vendor-cost {
+  margin-left: auto;
+  font-size: 1em;
+  font-weight: bold;
+}
+
+.cost-ok  { color: var(--accent); }
+.cost-low { color: var(--danger); }
+
+.vendor-effect {
+  font-size: 0.8em;
+  color: #4ccea0;
+  margin-bottom: 3px;
+}
+
+.vendor-detail {
+  font-size: 0.78em;
+  opacity: 0.6;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.vendor-footer {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+  margin-top: 8px;
+}
+
+/* ── Win / Lose card field report ─────────────────────────────────────────── */
+.field-report {
+  text-align: left;
+  font-family: var(--font-main);
+  font-size: 0.78em;
+  line-height: 1.6;
+  opacity: 0.75;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.win-card h1  { color: #1a9e6b; }
+.lose-card h1 { color: var(--danger); }
+
+/* ── Scrollbar styling (webkit) ────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(240, 165, 0, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(240, 165, 0, 0.6);
+}

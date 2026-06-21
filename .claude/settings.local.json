@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -f .codebuddy/skills/project/fish-lore-gen.md .codebuddy/skills/project/ui-modal.md)",
+      "Bash(mkdir -p data assets/images assets/audio ai-prompts functions)",
+      "Bash(ls -la *.js)",
+      "Bash(find . -maxdepth 2 -name \"*.js\" -not -path './.codebuddy/*')",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(node --check renderer.js)",
+      "Bash(node --check main.js)",
+      "Bash(node --check generator.js)",
+      "Bash(node --check vendor.js)",
+      "Bash(node tools/balance-harness.js)"
+    ]
+  }
+}

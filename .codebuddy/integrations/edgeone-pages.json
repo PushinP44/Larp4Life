@@ -1,0 +1,117 @@
+{
+  "_comment": "EdgeOne Pages deployment configuration for Ecosystem X: The Last Balance",
+  "_docs": "https://edgeone.ai/pages/docs",
+
+  "project": {
+    "name": "ecosystem-x",
+    "framework": "static",
+    "build_command": null,
+    "output_directory": ".",
+    "entry_file": "index.html"
+  },
+
+  "static_files": [
+    "index.html",
+    "style.css",
+    "main.js",
+    "state.js",
+    "prng.js",
+    "generator.js",
+    "validator.js",
+    "ecosystem.js",
+    "hysteria.js",
+    "renderer.js",
+    "input.js",
+    "notebook.js",
+    "vendor.js",
+    "ai_content.js"
+  ],
+
+  "asset_directories": [
+    "assets/",
+    "data/"
+  ],
+
+  "headers": [
+    {
+      "source": "/**",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "X-XSS-Protection", "value": "1; mode=block" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    },
+    {
+      "source": "/*.js",
+      "headers": [
+        { "key": "Content-Type", "value": "application/javascript" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/data/*.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/assets/**",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/assets/*.mp3",
+      "headers": [
+        { "key": "Content-Type", "value": "audio/mpeg" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    }
+  ],
+
+  "redirects": [],
+
+  "security": {
+    "_comment": "EdgeOne WAF/DDoS/bot management — claims the Game Security Architecture AI module. Capture dashboard screenshots for the PPT.",
+    "waf_enabled": true,
+    "ddos_protection": true,
+    "bot_management": true,
+    "ssl": "auto"
+  },
+
+  "cdn": {
+    "region": "southeast-asia",
+    "_comment": "SE-Asia CDN matches the wetland setting and the SEA division roadshow.",
+    "cache_rules": [
+      { "match": "*.js", "ttl": 3600, "stale_while_revalidate": 300 },
+      { "match": "*.json", "ttl": 3600 },
+      { "match": "*.png", "ttl": 86400 },
+      { "match": "*.mp3", "ttl": 86400 }
+    ]
+  },
+
+  "_optional_ai_ecologist_proxy": {
+    "_comment": "Tier B (chosen stretch) — see INTEGRATIONS-DECISION.md + skills/project/ai-ecologist.md. Secure proxy for the live AI advisor. Leaderboard NOT built.",
+    "functions_dir": "functions/",
+    "entry": "functions/ask.js",
+    "validate_input_server_side": true,
+    "rate_limit": "per-IP (abnormal-behavior detection)",
+    "anonymize_payload": "HaS-Anonymizer",
+    "_model_key_note": "The model API key is a FUNCTION env var only — never in the static bundle or this file."
+  },
+
+  "environment_variables": {
+    "_comment": "Public-safe config only — the core game is fully client-side. No secrets here. The advisor's model key is set on the Function, not in the static bundle.",
+    "GAME_VERSION": "1.0.0-hackathon",
+    "TRACK": "Track1-Direction2-Biodiversity"
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "coastal_wetland": {
+    "grid": { "w": 16, "h": 12 },
+
+    "nodes": [
+      {
+        "id": "n_runoff",
+        "kind": "stressor",
+        "name": "Agricultural Runoff",
+        "keystone": false,
+        "bands": {
+          "r":     [0, 0],
+          "K_max": [0, 0],
+          "alpha": [0, 0],
+          "weight": [0, 0]
+        }
+      },
+      {
+        "id": "n_seagrass",
+        "kind": "producer",
+        "name": "Seagrass",
+        "keystone": true,
+        "bands": {
+          "r":     [0.12, 0.18],
+          "K_max": [400,  600],
+          "alpha": [0.7,  1.0],
+          "weight": [2,    3]
+        }
+      },
+      {
+        "id": "n_shrimp",
+        "kind": "consumer",
+        "name": "Mangrove Shrimp",
+        "keystone": false,
+        "bands": {
+          "r":     [0.10, 0.16],
+          "K_max": [250,  400],
+          "alpha": [1.2,  1.8],
+          "weight": [1,   1.5]
+        }
+      },
+      {
+        "id": "n_heron",
+        "kind": "predator",
+        "name": "Painted Stork",
+        "keystone": true,
+        "bands": {
+          "r":     [0.05, 0.09],
+          "K_max": [60,   120],
+          "alpha": [2.0,  2.6],
+          "weight": [3,    4]
+        }
+      }
+    ],
+
+    "edges": [
+      { "from": "n_runoff",  "to": "n_seagrass", "betaBand": [0,    0   ] },
+      { "from": "n_seagrass","to": "n_shrimp",   "betaBand": [0.02, 0.05] },
+      { "from": "n_shrimp",  "to": "n_heron",    "betaBand": [0.03, 0.06] }
+    ],
+
+    "start": {
+      "stressor":       [40, 60],
+      "populationFrac": [0.35, 0.55]
+    },
+
+    "defaults": {
+      "_comment": "Guaranteed-valid fallback world used when 50 seed rerolls all fail validation. Mid-band parameters, stressor at 60/50/40/10 (balanced for greedy win ≤30 days), populations at 45% of K_max.",
+      "grid": { "w": 16, "h": 12 },
+      "tiles": {
+        "t_0_0":  { "id": "t_0_0",  "x": 0,  "y": 0,  "type": "source", "stressor": 60, "protected": false },
+        "t_4_2":  { "id": "t_4_2",  "x": 4,  "y": 2,  "type": "marsh",  "stressor": 50, "protected": false },
+        "t_8_5":  { "id": "t_8_5",  "x": 8,  "y": 5,  "type": "water",  "stressor": 40, "protected": false },
+        "t_12_9": { "id": "t_12_9", "x": 12, "y": 9,  "type": "land",   "stressor": 10, "protected": false }
+      },
+      "nodes": {
+        "n_runoff": {
+          "id": "n_runoff", "name": "Agricultural Runoff",
+          "kind": "stressor", "keystone": false,
+          "tileId": "t_0_0",
+          "population": 0, "r": 0, "K_max": 0, "alpha": 0, "weight": 0,
+          "status": "stable", "discovered": false, "extinction_counter": 0
+        },
+        "n_seagrass": {
+          "id": "n_seagrass", "name": "Seagrass",
+          "kind": "producer", "keystone": true,
+          "tileId": "t_4_2",
+          "population": 225, "r": 0.15, "K_max": 500, "alpha": 0.85, "weight": 2.5,
+          "status": "stable", "discovered": false, "extinction_counter": 0
+        },
+        "n_shrimp": {
+          "id": "n_shrimp", "name": "Mangrove Shrimp",
+          "kind": "consumer", "keystone": false,
+          "tileId": "t_8_5",
+          "population": 146, "r": 0.13, "K_max": 325, "alpha": 1.5, "weight": 1.25,
+          "status": "stable", "discovered": false, "extinction_counter": 0
+        },
+        "n_heron": {
+          "id": "n_heron", "name": "Painted Stork",
+          "kind": "predator", "keystone": true,
+          "tileId": "t_12_9",
+          "population": 36, "r": 0.07, "K_max": 90, "alpha": 2.3, "weight": 3.5,
+          "status": "stable", "discovered": false, "extinction_counter": 0
+        }
+      },
+      "edges": [
+        { "from": "n_runoff",  "to": "n_seagrass", "beta": 0,    "revealed": false },
+        { "from": "n_seagrass","to": "n_shrimp",   "beta": 0.035,"revealed": false },
+        { "from": "n_shrimp",  "to": "n_heron",    "beta": 0.045,"revealed": false }
+      ],
+      "actionsThisStep": {}
+    }
+  }
+}

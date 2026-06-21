@@ -1,0 +1,4 @@
+{
+  "type": "module",
+  "_comment": "Dev-only: enables `node tools/balance-harness.js` to import ES modules. Not a build step and not shipped with the game."
+}
