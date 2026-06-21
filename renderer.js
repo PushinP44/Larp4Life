@@ -653,23 +653,16 @@ function drawHUD(state, ctx, canvasW) {
   ctx.fillText(`⚡${scanner_charges}`, curX, cy + 6);
   curX += 58;
 
-  // ── Win/lose status flash (right-aligned) ─────────────────────────────────
-  if (state.flags.win || state.flags.lose) {
-    const msg = state.flags.win ? '✦ BIOME RESTORED ✦' : '✖ COLLAPSE';
-    ctx.font      = 'bold 13px monospace';
-    ctx.fillStyle = state.flags.win ? C.TILE_HEALTHY : C.DANGER;
-    ctx.textAlign = 'right';
-    ctx.fillText(msg, canvasW - PAD, cy);
-  }
-
-  // ── Streak indicator (right-aligned, below status) ─────────────────────────
+  // ── Streak indicator (left-aligned, right after SCAN — avoids overlapping it) ──
+  // Win/lose status is shown on the dedicated card overlay, so we no longer draw a
+  // redundant HUD banner here (it used to overlap the right-aligned SCAN indicator).
   const streak = state.meta.health_streak ?? 0;
-  if (streak > 0 && !state.flags.win) {
-    ctx.font      = '10px monospace';
+  if (streak > 0 && !state.flags.win && !state.flags.lose) {
+    ctx.font      = FONT;
     ctx.fillStyle = C.TILE_HEALTHY;
-    ctx.textAlign = 'right';
-    ctx.globalAlpha = 0.8;
-    ctx.fillText(`streak ${streak}/3`, canvasW - PAD, cy + 12);
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 0.85;
+    ctx.fillText(`streak ${streak}/3`, curX, cy + 4);
     ctx.globalAlpha = 1;
   }
 }

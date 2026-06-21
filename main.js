@@ -22,8 +22,8 @@ import { runDailyStep, computeHealth } from './ecosystem.js';
 import { initInput, triggerScan }    from './input.js';
 import { buildNotebookHTML }  from './notebook.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
-import { updateTier }         from './hysteria.js';
-import { getFieldReportFragment } from './ai_content.js';
+import { updateTier, loadDialogue } from './hysteria.js';
+import { loadAIContent, getFieldReportFragment } from './ai_content.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Canvas setup
@@ -58,6 +58,15 @@ async function loadBiomeTemplate() {
 }
 
 async function bootstrap() {
+  // Load AI content JSON files before first render so Day-1 codex/dialogue/
+  // report all use the richer generated text.  Both calls are fire-and-forget
+  // safe: on any fetch error they log a warning and the game proceeds on the
+  // inline fallbacks (Rule 01 — offline capability must never break).
+  await Promise.allSettled([
+    loadAIContent(),
+    loadDialogue(),
+  ]);
+
   GameState.load();
 
   const hasWorld = GameState.world &&

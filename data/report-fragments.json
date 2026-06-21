@@ -1,0 +1,42 @@
+{
+  "win_fast": [
+    "Ecosystem Health reached {health}% by Day {days} — early stressor control compounded faster than the models predicted; the meadow is recovering ahead of schedule.",
+    "Intervention at the source on Day {days} gave the {keystone} population enough runway to self-organise; the trophic cascade ran upward instead of down.",
+    "Field log closed Day {days}: {stressor} load suppressed to subcritical levels before secondary extinctions could propagate — a textbook early-strike result."
+  ],
+  "win_close": [
+    "Health crossed 75% on Day {days} with the collapse timer nearly expired — the margin was thin, but the wetland is standing and that is the only number that matters.",
+    "The {keystone} population held through the final stress window; Ecosystem Health {health}% confirms a functional, if fragile, recovery — continued monitoring advised.",
+    "Day {days}: intervention arrived late enough that {stressor} scars remain visible in the sediment record, yet the food web closed intact — a narrow but legitimate restoration."
+  ],
+  "lose_timeout": [
+    "The collapse timer expired at Health {health}% — {stressor} loading persisted long enough that cumulative trophic debt exceeded what the remaining {days} days could repay.",
+    "Time constraint, not intent, ended this run: {stressor} reduction was progressing but too slowly for the wetland's carrying-capacity decline curve.",
+    "Field log, final entry: the window closed at Day {days} with the meadow still degraded — the biology was tractable; the timeline was not."
+  ],
+  "lose_keystone": [
+    "{keystone} reached local extinction on Day {days}; once the apex node collapses, the energy pyramid loses its regulatory ceiling and recovery without restocking is not mathematically viable.",
+    "The loss of {keystone} is a threshold event — prey release and trophic cascade inversion will restructure community composition faster than any remaining intervention can counteract.",
+    "Field note, Day {days}: {keystone} confirmed absent from survey transects; the wetland's functional integrity is broken at the top — this run is a data point, not a failure of effort."
+  ],
+  "lesson_root_cause": [
+    "Suppressing {stressor} at its source gave downstream species the clean-water window they needed — treating the driver, not the symptom, is the lever with the longest reach.",
+    "Root-cause intervention against {stressor} allowed seagrass turbidity recovery to precede shrimp biomass gain, which then supported {keystone} prey density — the causal chain ran in the right direction.",
+    "The edge data showed {edgePct}% of stress flowing from {stressor}; allocating the first interventions there rather than at mid-trophic nodes was the decision that changed the trajectory."
+  ],
+  "lesson_symptom_only": [
+    "Mid-trophic interventions slowed the decline but never addressed {stressor}; symptom management without source control is a rearguard action against arithmetic.",
+    "Resources spent stabilising consumer populations bought time but not recovery — {stressor} continued loading nutrients while the trophic buffer was being artificially maintained.",
+    "The graph confirms it: {edgePct}% of cascading stress originated at {stressor}, which went untreated; every intervention downstream was discounting a debt that kept compounding."
+  ],
+  "lesson_shallow_scan": [
+    "Scan coverage was sufficient to identify surface-level species counts but the dependency edges between {keystone} and its prey guild were never resolved — keystone status remained invisible until it was too late.",
+    "Shallow survey confirmed presence/absence; it could not reveal that {stressor} was suppressing reproduction rather than adult survival, which changed the time-to-extinction estimate by roughly 40%.",
+    "The notebook filled with observations but the causal map stayed sparse — in degraded wetlands, what connects species matters as much as which species are present."
+  ],
+  "lesson_deep_scan": [
+    "Full edge resolution on Day {days} exposed the {stressor}→seagrass→shrimp→{keystone} pathway before the cascade completed; the dependency map turned a reactive response into a targeted one.",
+    "Deep scan charges were expensive but the return was proportionate — knowing that {edgePct}% of network stress ran through a single bottleneck node compressed the intervention search space dramatically.",
+    "Mapping the hidden trophic links early converted ambiguous health readings into a ranked action list; field ecologists call this the difference between monitoring and understanding."
+  ]
+}

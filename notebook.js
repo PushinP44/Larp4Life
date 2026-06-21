@@ -53,7 +53,7 @@ function nodeCardHTML(node, state) {
     <div class="nb-bar-track">
       <div class="nb-bar-fill" style="width:${relPop}%;background:${badge.color}"></div>
     </div>
-    <span class="nb-pop-label">${node.population} / ${node.K_max} (${relPop}%)</span>
+    <span class="nb-pop-label">${node.population} / ${Math.round(node.K_max)} (${relPop}%)</span>
   `;
 
   return `
@@ -121,7 +121,9 @@ export function buildNotebookHTML(state) {
     ? `<p style="opacity:0.5;font-style:italic">No species scanned yet. Move to a tile with a species and press E or click.</p>`
     : discoveredNodes.map(n => nodeCardHTML(n, state)).join('');
 
-  const scanCount   = discoveredNodes.length;
+  // Count discovered SPECIES only (exclude the stressor source) so the numerator
+  // matches the species-only denominator — otherwise scanning runoff shows 4/3.
+  const scanCount   = discoveredNodes.filter(n => n.kind !== 'stressor').length;
   const totalNodes  = Object.values(state.world.nodes).filter(n => n.kind !== 'stressor').length;
   const edgeCount   = state.notebook.revealed_edges.length;
   const totalEdges  = state.world.edges.filter(e => {

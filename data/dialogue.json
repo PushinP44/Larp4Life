@@ -1,0 +1,30 @@
+{
+  "Toxic": [
+    "Everything costs more right now — the catch has been bad for months and I have to make up the difference somewhere.",
+    "I wouldn't drink the canal water if I were you; the smell started two seasons ago and it hasn't left.",
+    "My cousin sold his boat last week — said there was no point keeping it when the nets come up empty.",
+    "Prices on shrimp paste tripled since the reeds started dying; I'm sorry, that's just where things are.",
+    "I'll sell you what I have, but honestly I'm not sure how long I can keep the stall open at this rate."
+  ],
+  "Degraded": [
+    "It's not as bad as last month, I'll give it that, but I'm still charging the old crisis rate until I see the birds come back.",
+    "The water looks a little clearer this week — could mean something, could be nothing; I've been fooled before.",
+    "I can do you a slight discount, but keep it between us — I can't afford to be generous with everyone yet.",
+    "Heard one of the herons was spotted at the north bend this morning; first time in a while, so maybe things are turning.",
+    "Stock is still thin but I'm cautiously restocking — emphasis on cautiously."
+  ],
+  "Recovering": [
+    "The shrimp are running again — not like the old days yet, but enough that I'm not worried about next week.",
+    "I dropped prices this morning; seemed only fair given how the water's been looking these past few days.",
+    "My kids actually swam in the estuary yesterday, first time in years — that felt like something worth noting.",
+    "I've got more stock than I've had in two seasons; take what you need, I'll give you a fair deal.",
+    "People are laughing at the market again — small thing, but you notice when it comes back."
+  ],
+  "Pristine": [
+    "Business is better than it's been in years and I'm giving discounts to everyone today, no arguments.",
+    "The seagrass beds are so thick you can smell them from the dock — I forgot that smell, honestly.",
+    "Take it at cost — the wetland's doing the real work, least I can do is pass the savings along.",
+    "My grandmother used to describe the estuary like this; I didn't believe her until now.",
+    "The painted storks are nesting in the north grove again, six pairs — that's as good an indicator as any I know."
+  ]
+}

@@ -19,6 +19,34 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module-level cache for data/dialogue.json — null = not yet loaded
+// Falls back to inline VENDOR_DIALOGUE on any fetch error (Rule 01).
+// ─────────────────────────────────────────────────────────────────────────────
+let _loadedDialogue = null;  // keyed by tier → string[]
+
+/**
+ * loadDialogue() → Promise<void>
+ *
+ * Fetches data/dialogue.json and caches it in _loadedDialogue.
+ * On any error (network, parse, missing file) the inline VENDOR_DIALOGUE
+ * fallback continues to be used — game always runs offline.
+ * Safe to call multiple times.
+ */
+export async function loadDialogue() {
+  try {
+    const resp = await fetch('data/dialogue.json');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    if (json && typeof json === 'object') {
+      _loadedDialogue = json;
+      console.log('[hysteria] dialogue.json loaded:', Object.keys(json).length, 'tiers');
+    }
+  } catch (err) {
+    console.warn('[hysteria] dialogue.json unavailable — using inline fallback.', err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Price factor table
 // ─────────────────────────────────────────────────────────────────────────────
 const PRICE_FACTORS = {
@@ -93,8 +121,9 @@ function tierForHealth(H) {
  * @returns {string}
  */
 export function getVendorDialogue(tier, daySeed = 1) {
-  const pool  = VENDOR_DIALOGUE[tier] ?? VENDOR_DIALOGUE.Degraded;
-  const idx   = ((daySeed * 1013) ^ (daySeed >> 3)) % pool.length;
+  // Prefer loaded JSON pool; fall back to inline constant if unavailable.
+  const pool = (_loadedDialogue?.[tier] ?? VENDOR_DIALOGUE[tier]) ?? VENDOR_DIALOGUE.Degraded;
+  const idx  = ((daySeed * 1013) ^ (daySeed >> 3)) % pool.length;
   return pool[Math.abs(idx)];
 }
 
