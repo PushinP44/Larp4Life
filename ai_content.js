@@ -17,6 +17,13 @@
  *   getInterventionDialogue(type, tier)   → string
  *   getFieldReportFragment(state)         → string  (end-of-run recap)
  *   INTERVENTION_DESCRIPTIONS             → object  (for vendor panel)
+ *
+ *   initArtLayers()                       → void   (call at boot — fire-and-forget)
+ *   getSprite(name)                       → HTMLImageElement|null
+ *
+ *   initAudio()                           → Promise<void>  (call after first user gesture)
+ *   setHealthAudio(H)                     → void   (crossfade ambience to match health 0-100)
+ *   playWinSting()                        → void   (play sting_win once)
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +31,207 @@
 // ─────────────────────────────────────────────────────────────────────────────
 let _loadedCodex     = null;   // keyed by node id → string
 let _loadedFragments = null;   // keyed by situation key → string[]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Art layer — sprite preloader
+// Rule 01: a missing file degrades gracefully; never throws.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @type {Map<string, HTMLImageElement>} */
+const _sprites = new Map();
+
+const _SPRITE_NAMES = [
+  // tiles (healthy)
+  'tile_water', 'tile_marsh', 'tile_land', 'tile_source',
+  // tiles (toxic variants)
+  'tile_water_toxic', 'tile_marsh_toxic', 'tile_land_toxic', 'tile_source_toxic',
+  // species
+  'sprite_seagrass', 'sprite_shrimp', 'sprite_heron', 'sprite_runoff',
+  // extinct silhouettes
+  'sprite_seagrass_extinct', 'sprite_shrimp_extinct', 'sprite_heron_extinct',
+  // agent + UI pack
+  'agent', 'ui_pack',
+];
+
+/**
+ * initArtLayers() — fire-and-forget image preloader.
+ *
+ * Loads all sprites from assets/images/.  Each Image's onerror handler
+ * simply leaves it absent from the cache; getSprite() returns null.
+ * Call once at boot (no await needed — renderer falls back until loaded).
+ */
+export function initArtLayers() {
+  for (const name of _SPRITE_NAMES) {
+    const img = new Image();
+    img.onload  = () => { _sprites.set(name, img); };
+    img.onerror = () => { /* graceful — leave absent from cache */ };
+    img.src = `assets/images/${name}.png`;
+  }
+}
+
+/**
+ * getSprite(name) → HTMLImageElement | null
+ *
+ * Returns a fully-loaded HTMLImageElement, or null if it wasn't loaded yet
+ * or failed to load.  Never throws.
+ *
+ * @param {string} name  e.g. 'tile_water', 'sprite_heron', 'agent'
+ * @returns {HTMLImageElement|null}
+ */
+export function getSprite(name) {
+  const img = _sprites.get(name);
+  return (img && img.complete && img.naturalWidth > 0) ? img : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio layer — Web Audio API ambient crossfader
+// Rule 01: entire block wrapped in try/catch; silent fallback if unsupported.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _audioCtx      = null;   // AudioContext, created on first user gesture
+let _ambBuffers    = {};     // { toxic, degraded, recovering, pristine } → AudioBuffer
+let _ambSources    = {};     // currently playing looping BufferSourceNode per tier
+let _ambGains      = {};     // GainNode per tier
+let _winBuffer     = null;   // AudioBuffer for sting_win
+let _audioReady    = false;  // true once buffers are fetched
+
+const _AMB_TIERS = ['toxic', 'degraded', 'recovering', 'pristine'];
+
+/**
+ * _loadAudioBuffer(ctx, url) → Promise<AudioBuffer>
+ * Fetches and decodes an audio file.  Rejects on network or decode error.
+ */
+async function _loadAudioBuffer(ctx, url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+  const ab = await resp.arrayBuffer();
+  return ctx.decodeAudioData(ab);
+}
+
+/**
+ * initAudio() → Promise<void>
+ *
+ * Creates the AudioContext (must be called from a user-gesture handler to
+ * satisfy browser autoplay policy), loads all ambient loops + win sting,
+ * and connects each to its own GainNode (all starting at gain 0).
+ *
+ * Safe to call multiple times — returns immediately if already initialised.
+ * All errors are caught; audio simply won't play on failure (Rule 01).
+ */
+export async function initAudio() {
+  if (_audioReady) return;
+  try {
+    if (!_audioCtx) {
+      _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (_audioCtx.state === 'suspended') {
+      await _audioCtx.resume();
+    }
+
+    // Load all ambient tracks + win sting in parallel
+    const loadResults = await Promise.allSettled([
+      ..._AMB_TIERS.map(t => _loadAudioBuffer(_audioCtx, `assets/audio/amb_${t}.mp3`)),
+      _loadAudioBuffer(_audioCtx, 'assets/audio/sting_win.mp3'),
+    ]);
+
+    // Wire ambient gains — start silent
+    for (let i = 0; i < _AMB_TIERS.length; i++) {
+      const result = loadResults[i];
+      if (result.status !== 'fulfilled') {
+        console.warn(`[ai_content] Audio: failed to load amb_${_AMB_TIERS[i]}`, result.reason);
+        continue;
+      }
+      const tier = _AMB_TIERS[i];
+      _ambBuffers[tier] = result.value;
+
+      const gainNode = _audioCtx.createGain();
+      gainNode.gain.setValueAtTime(0, _audioCtx.currentTime);
+      gainNode.connect(_audioCtx.destination);
+      _ambGains[tier] = gainNode;
+
+      // Start looping source at gain 0
+      const source = _audioCtx.createBufferSource();
+      source.buffer = _ambBuffers[tier];
+      source.loop   = true;
+      source.connect(gainNode);
+      source.start(0);
+      _ambSources[tier] = source;
+    }
+
+    // Win sting buffer (played on demand)
+    const winResult = loadResults[_AMB_TIERS.length];
+    if (winResult.status === 'fulfilled') {
+      _winBuffer = winResult.value;
+    } else {
+      console.warn('[ai_content] Audio: failed to load sting_win', winResult.reason);
+    }
+
+    _audioReady = true;
+    console.log('[ai_content] Audio initialised.');
+  } catch (err) {
+    console.warn('[ai_content] Audio init failed — silent fallback.', err);
+  }
+}
+
+/**
+ * setHealthAudio(H) — crossfade ambient layers to match ecosystem health H (0–100).
+ *
+ * Health tiers:  Toxic <25 · Degraded 25–50 · Recovering 50–75 · Pristine ≥75
+ * Crossfade: the active tier ramps to 1, neighbours ramp to 0, over ~0.5s.
+ * Safe to call before initAudio() — silently no-ops.
+ *
+ * @param {number} H  ecosystem_health, 0–100
+ */
+export function setHealthAudio(H) {
+  if (!_audioReady || !_audioCtx) return;
+  try {
+    const tier =
+      H >= 75 ? 'pristine'   :
+      H >= 50 ? 'recovering' :
+      H >= 25 ? 'degraded'   : 'toxic';
+
+    const now  = _audioCtx.currentTime;
+    const ramp = 0.5; // seconds
+
+    for (const t of _AMB_TIERS) {
+      const gain = _ambGains[t];
+      if (!gain) continue;
+      const target = t === tier ? 1.0 : 0.0;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(target, now + ramp);
+    }
+  } catch (err) {
+    // silent — never break gameplay
+  }
+}
+
+/**
+ * playWinSting() — play sting_win.mp3 once, fading all ambient out first.
+ * Safe to call before initAudio() — silently no-ops.
+ */
+export function playWinSting() {
+  if (!_audioReady || !_audioCtx || !_winBuffer) return;
+  try {
+    // Fade out all ambient
+    const now = _audioCtx.currentTime;
+    for (const t of _AMB_TIERS) {
+      const gain = _ambGains[t];
+      if (!gain) continue;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(0, now + 0.8);
+    }
+    // Play sting once
+    const src = _audioCtx.createBufferSource();
+    src.buffer = _winBuffer;
+    src.loop   = false;
+    src.connect(_audioCtx.destination);
+    src.start(now + 0.1);
+  } catch (err) {
+    // silent
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Species Codex — OFFLINE FALLBACK

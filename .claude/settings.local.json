@@ -15,7 +15,11 @@
       "Bash(node -e \"const c=require\\('./data/codex.json'\\); console.log\\('valid JSON, keys:', Object.keys\\(c\\).join\\(', '\\)\\)\")",
       "Bash(node -e ' *)",
       "Bash(grep -n \"scanned\\\\|Species\\\\|K_max\\\\|population\\\\|/ *\\\\${\\\\|toFixed\\\\|Math.round\" notebook.js)",
-      "Bash(node --check notebook.js)"
+      "Bash(node --check notebook.js)",
+      "Bash(mkdir -p ai-prompts/miora-output assets/images assets/audio)",
+      "Bash(mv assets/*preview*.png ai-prompts/miora-output/)",
+      "Bash(mv assets/*.png assets/images/)",
+      "Bash(mv assets/*.mp3 assets/audio/)"
     ]
   }
 }

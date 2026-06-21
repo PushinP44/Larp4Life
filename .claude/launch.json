@@ -18,6 +18,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8130"],
       "port": 8130
+    },
+    {
+      "name": "ecox4",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8131"],
+      "port": 8131
     }
   ]
 }

@@ -23,7 +23,11 @@ import { initInput, triggerScan }    from './input.js';
 import { buildNotebookHTML }  from './notebook.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
 import { updateTier, loadDialogue } from './hysteria.js';
-import { loadAIContent, getFieldReportFragment } from './ai_content.js';
+import {
+  loadAIContent, getFieldReportFragment,
+  initArtLayers,
+  initAudio, setHealthAudio, playWinSting,
+} from './ai_content.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Canvas setup
@@ -57,7 +61,23 @@ async function loadBiomeTemplate() {
   return resp.json();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio unlock — must happen inside a user-gesture handler (browser autoplay)
+// ─────────────────────────────────────────────────────────────────────────────
+let _audioUnlocked = false;
+
+async function _unlockAudio() {
+  if (_audioUnlocked) return;
+  _audioUnlocked = true;
+  await initAudio();
+  // Set initial ambient immediately after init
+  setHealthAudio(GameState.meta.ecosystem_health ?? 50);
+}
+
 async function bootstrap() {
+  // Fire-and-forget image preload — renderer degrades gracefully until loaded.
+  initArtLayers();
+
   // Load AI content JSON files before first render so Day-1 codex/dialogue/
   // report all use the richer generated text.  Both calls are fire-and-forget
   // safe: on any fetch error they log a warning and the game proceeds on the
@@ -222,6 +242,9 @@ async function newGame(seed) {
     GameState.meta.ecosystem_health = computeHealth(GameState);
     updateTier(GameState); // sets market_tier + price_factor, calls save()
 
+    // Set initial ambient (audio may not be ready yet — setHealthAudio no-ops safely)
+    setHealthAudio(GameState.meta.ecosystem_health);
+
     hideOverlay();
     startGame();
   } catch (err) {
@@ -311,6 +334,8 @@ overlay.addEventListener('click', async (e) => {
 
     // ── Start / Retry ─────────────────────────────────────────────────────
     case 'newgame': {
+      // First user gesture — unlock audio context (browser autoplay policy)
+      _unlockAudio();
       const seedInput = document.getElementById('seed-input');
       const seed = Math.max(1, parseInt(seedInput?.value || '1', 10));
       await newGame(seed);
@@ -371,6 +396,12 @@ overlay.addEventListener('click', async (e) => {
       const newHealth = GameState.meta.ecosystem_health;
       showDayResultBanner(prevHealth, newHealth, newDay);
 
+      // Crossfade ambient audio to match new health tier
+      setHealthAudio(newHealth);
+
+      // Win sting (fires once when win flag first becomes true)
+      if (GameState.flags.win) playWinSting();
+
       // Check for game-over conditions
       setTimeout(checkEndCondition, 400);
 
@@ -417,6 +448,8 @@ document.addEventListener('keydown', (e) => {
           runDailyStep(GameState);
           updateTier(GameState);
           showDayResultBanner(prevHealth, GameState.meta.ecosystem_health, GameState.meta.day_count);
+          setHealthAudio(GameState.meta.ecosystem_health);
+          if (GameState.flags.win) playWinSting();
           if (GameState.player.scanner_charges === 0) {
             GameState.player.scanner_charges = 5;
             GameState.save();

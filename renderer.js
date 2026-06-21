@@ -7,16 +7,84 @@
  * Rule 03: render() is READ-ONLY. It MUTATES NOTHING in state.
  *
  * Layers (drawn in order):
- *   1. Tile grid      — colour lerps by stressor L × ecosystem_health
- *   2. Node sprites   — size/opacity ∝ population/K_max; extinct = silhouette
+ *   1. Tile grid      — sprite or colour lerp by stressor/health; toxic crossfade
+ *   2. Node sprites   — drawImage when loaded, else circle fallback
  *   3. DAG edges      — ONLY edge.revealed===true, prey→predator, animated pulse
- *   4. Field Agent    — player position indicator
- *   5. HUD bar        — day, timer, health meter, tier, resources, scanner
+ *   4. Field Agent    — drawImage(agent) or crosshair fallback
+ *   5. HUD bar        — day, timer, health meter, tier, resources, scanner + ui_pack glyphs
  *
  * Exports:
  *   setupDPICanvas(canvas)       — call once on init; handles devicePixelRatio
  *   render(state, ctx, timestamp)— call every rAF frame; reads state, draws, returns nothing
  */
+
+import { getSprite } from './ai_content.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deterministic value-noise helpers  (no Math.random — Rule 01 / Law 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * hash3(seed, x, y) → float in [0, 1)
+ *
+ * Stateless integer hash that mixes seed + tile coordinates.
+ * Uses the same mulberry32 step formula to stay consistent with prng.js,
+ * but is called on-the-fly so no PRNG state is stored in the renderer.
+ */
+function hash3(seed, x, y) {
+  // Fold coordinates into a single 32-bit integer, then run two mulberry steps.
+  let a = (seed ^ (x * 0x9E3779B9) ^ (y * 0x6C62272E)) >>> 0;
+  a = (a + 0x6D2B79F5) | 0;
+  let t = Math.imul(a ^ (a >>> 15), 1 | a);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+/**
+ * smoothValueNoise(seed, x, y) → float in [0, 1)
+ *
+ * Bilinear-interpolated value noise on a 4×4 lattice so adjacent tiles
+ * blend smoothly into coherent water / marsh / land regions.
+ */
+function smoothValueNoise(seed, x, y) {
+  // Lattice cell
+  const ix = Math.floor(x / 4);
+  const iy = Math.floor(y / 4);
+  const fx = (x / 4) - ix;   // 0..1 within cell
+  const fy = (y / 4) - iy;
+
+  // Corner values
+  const v00 = hash3(seed, ix,     iy    );
+  const v10 = hash3(seed, ix + 1, iy    );
+  const v01 = hash3(seed, ix,     iy + 1);
+  const v11 = hash3(seed, ix + 1, iy + 1);
+
+  // Smooth step (quintic)
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const uy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+
+  return v00 * (1 - ux) * (1 - uy)
+       + v10 *      ux  * (1 - uy)
+       + v01 * (1 - ux) *      uy
+       + v11 *      ux  *      uy;
+}
+
+/**
+ * tileTypeFromNoise(seed, tx, ty) → 'water' | 'marsh' | 'land'
+ *
+ * Two-octave noise for richer clustering.  Thresholds tuned so that
+ * roughly 25% water / 35% marsh / 40% land on a typical 8×8 grid.
+ * 'source' tiles are reserved for the stressor node and set by the
+ * generator — we never override those.
+ */
+function tileTypeFromNoise(seed, tx, ty) {
+  const n1 = smoothValueNoise(seed,       tx,     ty    );
+  const n2 = smoothValueNoise(seed + 137, tx * 2, ty * 2);
+  const n  = n1 * 0.7 + n2 * 0.3;
+  if (n < 0.28)  return 'water';
+  if (n < 0.55)  return 'marsh';
+  return 'land';
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colour helpers (from game-dev-patterns.md)
@@ -187,54 +255,115 @@ function tileBaseColor(type) {
 }
 
 /**
+ * _biomeFilter(H) → CSS filter string
+ *
+ * Maps ecosystem_health (0–100) to a dramatic visual shift:
+ *   H=0   → very desaturated (15%), dark (70%), warm-brown sepia cast
+ *   H=50  → mid-point (65% sat, 90% brightness)
+ *   H=100 → fully saturated (130%), bright (110%), slight cool hue boost
+ *
+ * Applied as a ctx.filter before drawing any tile, giving the whole biome
+ * a coherent sick→lush arc that players immediately notice.
+ */
+function _biomeFilter(H) {
+  const t = Math.max(0, Math.min(1, H / 100));
+
+  // Saturation: 15% at H=0 → 100% at H~60 → 130% at H=100
+  const sat = Math.round(15 + 115 * t);
+
+  // Brightness: 68% at H=0 → 100% at H~65 → 110% at H=100
+  const bri = Math.round(68 + 42 * t);
+
+  // Sepia: heavy at low health (muddy wetland), none at high health
+  const sep = Math.round(Math.max(0, (1 - t * 2)) * 55); // 55% → 0% over bottom half
+
+  // Hue-rotate: slight warm shift (+10°) when sick, slight cool (-6°) when pristine
+  const hue = Math.round(10 - 16 * t); // +10 at H=0, -6 at H=100
+
+  return `saturate(${sat}%) brightness(${bri}%) sepia(${sep}%) hue-rotate(${hue}deg)`;
+}
+
+/**
  * drawTileGrid(state, ctx, metrics)
  *
- * Each tile colour:
- *   1. Start from base colour for tile type.
- *   2. Lerp toward TILE_TOXIC based on stressor L / 100
- *      (more polluted → more brown/desaturated).
- *   3. Lerp the result toward TILE_HEALTHY based on ecosystem_health / 100
- *      (globally healthier biome → tiles appear more vibrant overall).
+ * Visual design:
+ *   (A) GLOBAL vibrancy: ctx.filter driven by ecosystem_health creates a
+ *       dramatic sick (desaturated, dim, sepia) → lush (saturated, bright)
+ *       arc across the entire biome.
+ *   (B) PER-TILE type: deterministic value-noise field (seeded from
+ *       meta.seed, no Math.random) clusters water/marsh/land into coherent
+ *       geographic regions instead of a checkerboard.
+ *       'source' tiles from the generator are never overridden.
+ *   (C) TOXIC crossfade: per-tile stressor level drives the pollution
+ *       sprite on top of the healthy sprite (keeps Rule 01 fallback).
  */
 function drawTileGrid(state, ctx, metrics) {
-  /* AI_INTEGRATION_STUB: Miora/MPS — replace flat color fill with
-     ctx.drawImage(sprites[tile.type], ...) for generated tile sprites */
-  const H = state.meta.ecosystem_health;       // 0–100
+  const H    = state.meta.ecosystem_health;   // 0–100
+  const seed = state.meta.seed ?? 12345;
 
-  // Fix (3): clamp health darkening so tiles never fade below a visible floor.
-  // Without this, low-H ambient tiles (stressor=0) converge toward BG_DARK and
-  // the map looks empty.  We reserve only 40% of the lerp range for darkening
-  // (healthFloor=0.25 means the darkest the global health modifier can push a
-  // tile is 25% of the way toward TILE_HEALTHY — i.e. tiles keep 75% of their
-  // base colour even at H=0).  The remaining modulation still gives clear
-  // visual feedback that the biome is sick without making it invisible.
+  // Flat-colour fallback health fraction (used only when sprites are absent)
   const healthFrac = 0.25 + 0.20 * Math.max(0, Math.min(1, H / 100));
-  // healthFrac range: H=0 → 0.25 (floor), H=100 → 0.45 (ceiling)
-  // This keeps every tile visibly coloured while still distinguishing tiers.
+
+  // ── (A) Set global biome filter for all tiles ────────────────────────────
+  // We apply filter once on ctx.save() scope wrapping the whole tile layer.
+  // Grid lines and protected borders are drawn OUTSIDE this filter scope
+  // so they always remain crisp and readable.
+  ctx.save();
+  ctx.filter = _biomeFilter(H);
 
   for (const [tileId, tile] of Object.entries(state.world.tiles)) {
     const { x, y, w, h } = tilePx(tileId, state, metrics);
     const L = tile.stressor ?? 0;              // 0–100
     const stressFrac = Math.max(0, Math.min(1, L / 100));
 
-    // Step 1: base → toxic lerp (stressor effect on this tile's own pollution)
-    const base  = tileBaseColor(tile.type ?? 'land');
-    const step1 = lerpColor(base, C.TILE_TOXIC, stressFrac * 0.75);
+    // ── (B) Noise-based tile type (never override 'source') ──────────────
+    let tx, ty;
+    if (tile.x !== undefined) {
+      tx = tile.x; ty = tile.y;
+    } else {
+      const parts = tileId.split('_');
+      tx = parseInt(parts[1], 10);
+      ty = parseInt(parts[2], 10);
+    }
+    const type = tile.type === 'source'
+      ? 'source'
+      : tileTypeFromNoise(seed, tx, ty);
 
-    // Step 2: lerp toward TILE_HEALTHY with the floor-clamped health fraction
-    // so healthy biomes are more vibrant and sick biomes are desaturated but
-    // still readable as continuous terrain (not black holes).
-    const step2 = lerpColor(step1, C.TILE_HEALTHY, healthFrac);
+    const spriteHealthy = getSprite(`tile_${type}`);
+    const spriteToxic   = getSprite(`tile_${type}_toxic`);
 
-    ctx.fillStyle = step2;
-    ctx.fillRect(x, y, w, h);
+    if (spriteHealthy) {
+      // ── Sprite path ──────────────────────────────────────────────────
+      ctx.globalAlpha = 1;
+      ctx.drawImage(spriteHealthy, x, y, w, h);
 
-    // Subtle grid lines
+      // Toxic crossfade on top
+      if (spriteToxic && stressFrac > 0) {
+        ctx.globalAlpha = stressFrac * 0.85;
+        ctx.drawImage(spriteToxic, x, y, w, h);
+        ctx.globalAlpha = 1;
+      }
+    } else {
+      // ── Flat-colour fallback ─────────────────────────────────────────
+      const base  = tileBaseColor(type);
+      const step1 = lerpColor(base, C.TILE_TOXIC, stressFrac * 0.75);
+      const step2 = lerpColor(step1, C.TILE_HEALTHY, healthFrac);
+      ctx.fillStyle = step2;
+      ctx.fillRect(x, y, w, h);
+    }
+  }
+
+  // ── Restore normal filter before drawing grid lines / borders ───────────
+  ctx.restore();
+
+  // ── Grid lines and protected borders (always crisp, unfiltered) ─────────
+  for (const [tileId, tile] of Object.entries(state.world.tiles)) {
+    const { x, y, w, h } = tilePx(tileId, state, metrics);
+
     ctx.strokeStyle = 'rgba(0,0,0,0.18)';
     ctx.lineWidth = 0.5;
     ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
-    // Protected tile indicator (dashed border)
     if (tile.protected) {
       ctx.strokeStyle = C.ACCENT;
       ctx.lineWidth = 1.5;
@@ -263,120 +392,190 @@ function nodeColor(kind) {
 }
 
 /**
- * drawNodes(state, ctx, metrics)
+ * _spriteKeyForNode(node) → { healthy: string, extinct: string|null }
  *
- * Each biological node is drawn as a circle on its tile:
- *   radius  = base * sqrt(P / K_max)   — size ∝ relative population
- *   opacity = lerp(0.2, 1.0, P/K_max) — fades as population falls
- *   extinct = filled grey silhouette at 0.25 opacity, strikethrough
+ * Maps node.id to its sprite names.
+ * Convention: node ids are 'n_seagrass', 'n_shrimp', 'n_heron', 'n_runoff'.
+ * Strip the 'n_' prefix to get the sprite suffix.
+ */
+function _spriteKeyForNode(node) {
+  const suffix = node.id.replace(/^n_/, '');
+  return {
+    healthy: `sprite_${suffix}`,
+    extinct: `sprite_${suffix}_extinct`,
+  };
+}
+
+/**
+ * drawNodes(state, ctx, metrics, timestamp)
  *
- * Keystone nodes get an accent ring.
- * Stressor nodes draw as a pulsing hazard symbol (◆ diamond).
+ * When sprite loaded (getSprite returns non-null):
+ *   - extinct:  draws the _extinct variant (or fades base if no extinct sprite)
+ *   - living:   draws sprite scaled by population/K_max; keystone + endangered
+ *               rings drawn on top via canvas primitives
+ *
+ * Fallback (sprite not loaded): original circle / diamond shapes.
  */
 function drawNodes(state, ctx, metrics, timestamp) {
-  /* AI_INTEGRATION_STUB: Miora/MPS — replace shapes with
-     ctx.drawImage(nodeSprites[node.id], ...) for generated species art */
   const BASE_R = Math.min(metrics.tileW, metrics.tileH) * 0.32;
+  const SPRITE_BASE = Math.min(metrics.tileW, metrics.tileH) * 0.72; // max sprite draw size
 
   for (const node of Object.values(state.world.nodes)) {
     const centre = nodeCentre(node.id, state, metrics);
     if (!centre) continue;
     const { cx, cy } = centre;
 
-    // ── Stressor node: pulsing red diamond ──────────────────────────────────
+    // ── Stressor node: sprite_runoff or pulsing red diamond ─────────────────
     if (node.kind === 'stressor') {
+      const runoffSprite = getSprite('sprite_runoff');
       const pulse = 0.7 + 0.3 * Math.sin(timestamp / 600);
-      const size  = BASE_R * 0.7 * pulse;
-      ctx.save();
-      ctx.globalAlpha = 0.85;
-      ctx.fillStyle   = C.NODE_STRESSOR;
-      ctx.translate(cx, cy);
-      ctx.rotate(Math.PI / 4);
-      ctx.fillRect(-size / 2, -size / 2, size, size);
-      ctx.restore();
-
-      // "!" warning label
-      ctx.fillStyle = C.TEXT_LIGHT;
-      ctx.font      = `bold ${Math.round(BASE_R * 0.7)}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.globalAlpha = 0.9;
-      ctx.fillText('!', cx, cy);
-      ctx.globalAlpha = 1;
+      const size  = SPRITE_BASE * 0.55 * pulse;
+      if (runoffSprite) {
+        ctx.save();
+        ctx.globalAlpha = 0.88 * pulse;
+        ctx.drawImage(runoffSprite, cx - size / 2, cy - size / 2, size, size);
+        ctx.restore();
+      } else {
+        // Fallback: pulsing diamond
+        const ds = BASE_R * 0.7 * pulse;
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle   = C.NODE_STRESSOR;
+        ctx.translate(cx, cy);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillRect(-ds / 2, -ds / 2, ds, ds);
+        ctx.restore();
+        ctx.fillStyle    = C.TEXT_LIGHT;
+        ctx.font         = `bold ${Math.round(BASE_R * 0.7)}px monospace`;
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.globalAlpha  = 0.9;
+        ctx.fillText('!', cx, cy);
+        ctx.globalAlpha  = 1;
+      }
       continue;
     }
 
-    // ── Extinct node: faded grey silhouette ─────────────────────────────────
+    // ── Extinct node ─────────────────────────────────────────────────────────
     if (node.status === 'extinct') {
-      ctx.save();
-      ctx.globalAlpha = 0.25;
-      ctx.fillStyle   = C.NODE_EXTINCT;
-      ctx.beginPath();
-      ctx.arc(cx, cy, BASE_R * 0.55, 0, Math.PI * 2);
-      ctx.fill();
-      // X mark
-      ctx.strokeStyle = '#888';
-      ctx.lineWidth   = 1.5;
-      const d = BASE_R * 0.3;
-      ctx.beginPath();
-      ctx.moveTo(cx - d, cy - d); ctx.lineTo(cx + d, cy + d);
-      ctx.moveTo(cx + d, cy - d); ctx.lineTo(cx - d, cy + d);
-      ctx.stroke();
-      ctx.restore();
+      const { extinct, healthy } = _spriteKeyForNode(node);
+      const extSprite  = getSprite(extinct);
+      const baseSprite = getSprite(healthy);
+      const size       = SPRITE_BASE * 0.62;
+      if (extSprite) {
+        ctx.save();
+        ctx.globalAlpha = 0.30;
+        ctx.drawImage(extSprite, cx - size / 2, cy - size / 2, size, size);
+        ctx.restore();
+      } else if (baseSprite) {
+        // Faded base as fallback extinct visual
+        ctx.save();
+        ctx.globalAlpha = 0.20;
+        ctx.filter = 'grayscale(100%)';
+        ctx.drawImage(baseSprite, cx - size / 2, cy - size / 2, size, size);
+        ctx.filter = 'none';
+        ctx.restore();
+      } else {
+        // Shape fallback
+        ctx.save();
+        ctx.globalAlpha = 0.25;
+        ctx.fillStyle   = C.NODE_EXTINCT;
+        ctx.beginPath();
+        ctx.arc(cx, cy, BASE_R * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#888';
+        ctx.lineWidth   = 1.5;
+        const d = BASE_R * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(cx - d, cy - d); ctx.lineTo(cx + d, cy + d);
+        ctx.moveTo(cx + d, cy - d); ctx.lineTo(cx - d, cy + d);
+        ctx.stroke();
+        ctx.restore();
+      }
       continue;
     }
 
-    // ── Living node ─────────────────────────────────────────────────────────
+    // ── Living node ──────────────────────────────────────────────────────────
     const relPop  = node.K_max > 0
       ? Math.max(0, Math.min(1, node.population / node.K_max))
       : 0;
-    const radius  = BASE_R * (0.35 + 0.65 * Math.sqrt(relPop));
     const opacity = 0.25 + 0.75 * relPop;
-    const color   = nodeColor(node.kind);
+    const { healthy } = _spriteKeyForNode(node);
+    const sprite  = getSprite(healthy);
 
-    ctx.save();
-    ctx.globalAlpha = opacity;
-
-    // Fill circle
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Keystone ring
-    if (node.keystone) {
-      ctx.globalAlpha = Math.min(1, opacity + 0.2);
-      ctx.strokeStyle = C.ACCENT;
-      ctx.lineWidth   = 1.8;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius + 3, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // Endangered pulse glow
-    if (node.status === 'endangered') {
-      const glow = 0.4 + 0.6 * Math.abs(Math.sin(timestamp / 400));
-      ctx.globalAlpha = glow * 0.6;
-      ctx.strokeStyle = C.DANGER;
-      ctx.lineWidth   = 2.5;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius + 6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    ctx.restore();
-
-    // Node name label (only for discovered nodes or when population > 0)
-    if (node.discovered || node.population > 0) {
+    if (sprite) {
+      // Scale sprite by population (min 40% size, max 100%)
+      const scaledSize = SPRITE_BASE * (0.40 + 0.60 * Math.sqrt(relPop));
       ctx.save();
-      ctx.globalAlpha = Math.max(0.4, opacity);
-      ctx.fillStyle   = C.TEXT_LIGHT;
-      ctx.font        = `${Math.max(8, Math.round(metrics.tileH * 0.16))}px monospace`;
-      ctx.textAlign   = 'center';
+      ctx.globalAlpha = opacity;
+      ctx.drawImage(sprite,
+        cx - scaledSize / 2, cy - scaledSize / 2,
+        scaledSize, scaledSize);
+
+      // Keystone accent ring on top of sprite
+      if (node.keystone) {
+        ctx.globalAlpha = Math.min(1, opacity + 0.25);
+        ctx.strokeStyle = C.ACCENT;
+        ctx.lineWidth   = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, scaledSize / 2 + 4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Endangered pulse glow
+      if (node.status === 'endangered') {
+        const glow = 0.4 + 0.6 * Math.abs(Math.sin(timestamp / 400));
+        ctx.globalAlpha = glow * 0.65;
+        ctx.strokeStyle = C.DANGER;
+        ctx.lineWidth   = 2.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, scaledSize / 2 + 9, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else {
+      // ── Shape fallback ─────────────────────────────────────────────────
+      const radius = BASE_R * (0.35 + 0.65 * Math.sqrt(relPop));
+      const color  = nodeColor(node.kind);
+      ctx.save();
+      ctx.globalAlpha = opacity;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      if (node.keystone) {
+        ctx.globalAlpha = Math.min(1, opacity + 0.2);
+        ctx.strokeStyle = C.ACCENT;
+        ctx.lineWidth   = 1.8;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius + 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (node.status === 'endangered') {
+        const glow = 0.4 + 0.6 * Math.abs(Math.sin(timestamp / 400));
+        ctx.globalAlpha = glow * 0.6;
+        ctx.strokeStyle = C.DANGER;
+        ctx.lineWidth   = 2.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius + 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Node name label (always below sprite/shape)
+    if (node.discovered || node.population > 0) {
+      const labelY = sprite
+        ? cy + (SPRITE_BASE * (0.40 + 0.60 * Math.sqrt(relPop))) / 2 + 3
+        : cy + BASE_R * (0.35 + 0.65 * Math.sqrt(relPop)) + 3;
+      ctx.save();
+      ctx.globalAlpha  = Math.max(0.4, opacity);
+      ctx.fillStyle    = C.TEXT_LIGHT;
+      ctx.font         = `${Math.max(8, Math.round(metrics.tileH * 0.16))}px monospace`;
+      ctx.textAlign    = 'center';
       ctx.textBaseline = 'top';
-      // Truncate long names
       const label = node.name.length > 12 ? node.name.slice(0, 11) + '…' : node.name;
-      ctx.fillText(label, cx, cy + radius + 3);
+      ctx.fillText(label, cx, labelY);
       ctx.restore();
     }
   }
@@ -460,53 +659,60 @@ function drawEdges(state, ctx, metrics, timestamp) {
 /**
  * drawAgent(state, ctx, metrics, timestamp)
  *
- * Draws the player as a bright ◎ crosshair indicator on their tile.
+ * Draws agent.png centred on the player tile.
+ * Fallback: original crosshair indicator.
  */
 function drawAgent(state, ctx, metrics, timestamp) {
   const { tile_x: tx, tile_y: ty } = state.player;
-  const x = metrics.offsetX + tx * metrics.tileW;
-  const y = metrics.offsetY + ty * metrics.tileH;
-  const w = metrics.tileW;
-  const h = metrics.tileH;
+  const x  = metrics.offsetX + tx * metrics.tileW;
+  const y  = metrics.offsetY + ty * metrics.tileH;
+  const w  = metrics.tileW;
+  const h  = metrics.tileH;
   const cx = x + w / 2;
   const cy = y + h / 2;
 
-  // Highlight the current tile
+  // Tile highlight (both sprite and fallback paths)
   const pulse = 0.3 + 0.2 * Math.sin(timestamp / 500);
   ctx.save();
-  ctx.fillStyle   = `rgba(240, 165, 0, ${pulse})`;
+  ctx.fillStyle = `rgba(240, 165, 0, ${pulse})`;
   ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
   ctx.restore();
 
-  // Outer ring
-  ctx.save();
-  ctx.strokeStyle = C.ACCENT;
-  ctx.lineWidth   = 2;
-  ctx.globalAlpha = 0.9;
-  ctx.beginPath();
-  ctx.arc(cx, cy, Math.min(w, h) * 0.36, 0, Math.PI * 2);
-  ctx.stroke();
+  const agentSprite = getSprite('agent');
+  if (agentSprite) {
+    const size = Math.min(w, h) * 0.78;
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    ctx.drawImage(agentSprite, cx - size / 2, cy - size / 2, size, size);
+    ctx.restore();
+  } else {
+    // ── Crosshair fallback ──────────────────────────────────────────────────
+    ctx.save();
+    ctx.strokeStyle = C.ACCENT;
+    ctx.lineWidth   = 2;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.min(w, h) * 0.36, 0, Math.PI * 2);
+    ctx.stroke();
 
-  // Inner dot
-  ctx.fillStyle   = C.ACCENT;
-  ctx.globalAlpha = 1;
-  ctx.beginPath();
-  ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-  ctx.fill();
+    ctx.fillStyle   = C.ACCENT;
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fill();
 
-  // Cross-hairs
-  const cr = Math.min(w, h) * 0.42;
-  const ci = Math.min(w, h) * 0.18;
-  ctx.lineWidth = 1;
-  ctx.globalAlpha = 0.7;
-  [[cx - cr, cy, cx - ci, cy],
-   [cx + ci, cy, cx + cr, cy],
-   [cx, cy - cr, cx, cy - ci],
-   [cx, cy + ci, cx, cy + cr]].forEach(([ax, ay, bx, by]) => {
-    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-  });
-
-  ctx.restore();
+    const cr = Math.min(w, h) * 0.42;
+    const ci = Math.min(w, h) * 0.18;
+    ctx.lineWidth   = 1;
+    ctx.globalAlpha = 0.7;
+    [[cx - cr, cy, cx - ci, cy],
+     [cx + ci, cy, cx + cr, cy],
+     [cx, cy - cr, cx, cy - ci],
+     [cx, cy + ci, cx, cy + cr]].forEach(([ax, ay, bx, by]) => {
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    });
+    ctx.restore();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -586,11 +792,24 @@ function drawHUD(state, ctx, canvasW) {
   const mx      = curX;
   const my      = cy - METER_H / 2 - 2;
 
-  // Label + value
-  ctx.font = FONT;
-  ctx.fillStyle = C.TEXT_LIGHT;
-  ctx.textAlign = 'left';
-  ctx.fillText('HEALTH', mx, my - 2);
+  // Health-leaf glyph (ui_pack index 4) or text label
+  const uiPackH = getSprite('ui_pack');
+  const HGLYPH  = 20;
+  if (uiPackH) {
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.drawImage(uiPackH, 4 * 128, 0, 128, 128, mx, cy - HGLYPH / 2, HGLYPH, HGLYPH);
+    ctx.restore();
+    ctx.font      = FONT;
+    ctx.fillStyle = C.TEXT_LIGHT;
+    ctx.textAlign = 'left';
+    ctx.fillText('HEALTH', mx + HGLYPH + 3, my - 2);
+  } else {
+    ctx.font = FONT;
+    ctx.fillStyle = C.TEXT_LIGHT;
+    ctx.textAlign = 'left';
+    ctx.fillText('HEALTH', mx, my - 2);
+  }
 
   // Bar track
   ctx.fillStyle = 'rgba(255,255,255,0.1)';
@@ -644,14 +863,28 @@ function drawHUD(state, ctx, canvasW) {
   curX += 10;
 
   // ── Scanner charges ───────────────────────────────────────────────────────
-  ctx.font      = FONT;
-  ctx.fillStyle = C.TEXT_LIGHT;
-  ctx.textAlign = 'left';
-  ctx.fillText('SCAN', curX, cy - 5);
+  const uiPack = getSprite('ui_pack');
+  // UI_PACK glyph order: [0]scanner [1]scan-pulse [2]link [3]coin [4]health-leaf
+  const GLYPH_SIZE = 22;
+  if (uiPack) {
+    // Scanner icon glyph (index 0)
+    ctx.save();
+    ctx.globalAlpha = scanner_charges > 0 ? 0.9 : 0.4;
+    ctx.drawImage(uiPack, 0, 0, 128, 128, curX, cy - GLYPH_SIZE / 2, GLYPH_SIZE, GLYPH_SIZE);
+    ctx.restore();
+    curX += GLYPH_SIZE + 3;
+  } else {
+    ctx.font      = FONT;
+    ctx.fillStyle = C.TEXT_LIGHT;
+    ctx.textAlign = 'left';
+    ctx.fillText('SCAN', curX, cy - 5);
+    curX += 32;
+  }
   ctx.font      = FONT_LG;
   ctx.fillStyle = scanner_charges > 0 ? C.EDGE : C.DANGER;
-  ctx.fillText(`⚡${scanner_charges}`, curX, cy + 6);
-  curX += 58;
+  ctx.textAlign = 'left';
+  ctx.fillText(`${scanner_charges}`, curX, cy + 4);
+  curX += 26;
 
   // ── Streak indicator (left-aligned, right after SCAN — avoids overlapping it) ──
   // Win/lose status is shown on the dedicated card overlay, so we no longer draw a
