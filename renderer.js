@@ -297,8 +297,8 @@ function _biomeFilter(H) {
  *   (C) TOXIC crossfade: per-tile stressor level drives the pollution
  *       sprite on top of the healthy sprite (keeps Rule 01 fallback).
  */
-function drawTileGrid(state, ctx, metrics) {
-  const H    = state.meta.ecosystem_health;   // 0–100
+function drawTileGrid(state, ctx, metrics, timestamp = 0) {
+  const H    = _easeHealth(state.meta.ecosystem_health);   // 0–100, eased for smooth transitions
   const seed = state.meta.seed ?? 12345;
 
   // Flat-colour fallback health fraction (used only when sprites are absent)
@@ -334,15 +334,23 @@ function drawTileGrid(state, ctx, metrics) {
 
     if (spriteHealthy) {
       // ── Sprite path ──────────────────────────────────────────────────
+      // Deterministic per-tile mirror (4 orientations) breaks the visible
+      // "stamped texture" repetition. Same orientation for healthy + toxic so
+      // they align. +1px overdraw hides hairline seams between adjacent tiles.
+      const o  = (hash3(seed, tx + 17, ty + 31) * 4) | 0; // 0..3
+      const fx = (o & 1) ? -1 : 1;
+      const fy = (o & 2) ? -1 : 1;
+      ctx.save();
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.scale(fx, fy);
       ctx.globalAlpha = 1;
-      ctx.drawImage(spriteHealthy, x, y, w, h);
-
-      // Toxic crossfade on top
+      ctx.drawImage(spriteHealthy, -w / 2 - 0.5, -h / 2 - 0.5, w + 1, h + 1);
       if (spriteToxic && stressFrac > 0) {
         ctx.globalAlpha = stressFrac * 0.85;
-        ctx.drawImage(spriteToxic, x, y, w, h);
-        ctx.globalAlpha = 1;
+        ctx.drawImage(spriteToxic, -w / 2 - 0.5, -h / 2 - 0.5, w + 1, h + 1);
       }
+      ctx.restore();
+      ctx.globalAlpha = 1;
     } else {
       // ── Flat-colour fallback ─────────────────────────────────────────
       const base  = tileBaseColor(type);
@@ -351,26 +359,23 @@ function drawTileGrid(state, ctx, metrics) {
       ctx.fillStyle = step2;
       ctx.fillRect(x, y, w, h);
     }
+
+    // Animated water shimmer (time-based, deterministic — no Math.random)
+    if (type === 'water') drawWaterShimmer(ctx, x, y, w, h, tx, ty, timestamp);
   }
 
   // ── Restore normal filter before drawing grid lines / borders ───────────
   ctx.restore();
 
-  // ── Grid lines and protected borders (always crisp, unfiltered) ─────────
+  // ── Protected-zone borders only (no ambient grid — keeps the biome organic) ──
   for (const [tileId, tile] of Object.entries(state.world.tiles)) {
+    if (!tile.protected) continue;
     const { x, y, w, h } = tilePx(tileId, state, metrics);
-
-    ctx.strokeStyle = 'rgba(0,0,0,0.18)';
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-
-    if (tile.protected) {
-      ctx.strokeStyle = C.ACCENT;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-      ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
-      ctx.setLineDash([]);
-    }
+    ctx.strokeStyle = C.ACCENT;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
+    ctx.setLineDash([]);
   }
 }
 
@@ -506,10 +511,20 @@ function drawNodes(state, ctx, metrics, timestamp) {
     if (sprite) {
       // Scale sprite by population (min 40% size, max 100%)
       const scaledSize = SPRITE_BASE * (0.40 + 0.60 * Math.sqrt(relPop));
+      // Soft ground shadow lifts the sprite off the tile (depth)
+      ctx.save();
+      ctx.globalAlpha = opacity * 0.35;
+      ctx.fillStyle   = '#000';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + scaledSize * 0.34, scaledSize * 0.30, scaledSize * 0.12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // Gentle idle bob so living species feel alive (shadow stays grounded)
+      const bob = Math.sin(timestamp / 700 + cx * 0.05 + cy * 0.03) * scaledSize * 0.05;
       ctx.save();
       ctx.globalAlpha = opacity;
       ctx.drawImage(sprite,
-        cx - scaledSize / 2, cy - scaledSize / 2,
+        cx - scaledSize / 2, cy - scaledSize / 2 + bob,
         scaledSize, scaledSize);
 
       // Keystone accent ring on top of sprite
@@ -713,6 +728,27 @@ function drawAgent(state, ctx, metrics, timestamp) {
     });
     ctx.restore();
   }
+
+  // ── UX: current tile's stressor readout (the tile bioremediation will clean) ──
+  const curTile = state.world.tiles[`t_${tx}_${ty}`]
+    || Object.values(state.world.tiles).find(t => t.x === tx && t.y === ty);
+  if (curTile) {
+    const L = Math.round(curTile.stressor ?? 0);
+    const col = L > 60 ? C.DANGER : L > 30 ? C.ACCENT : '#4ccea0';
+    const label = `L ${L}`;
+    ctx.save();
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width + 14;
+    const py = y - 9;
+    ctx.fillStyle = 'rgba(10,14,20,0.88)';
+    ctx.fillRect(cx - tw / 2, py - 8, tw, 16);
+    ctx.fillStyle = col;
+    ctx.fillRect(cx - tw / 2, py - 8, 3, 16);
+    ctx.fillText(label, cx, py);
+    ctx.restore();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -914,6 +950,102 @@ function drawHUD(state, ctx, canvasW) {
  * @param {CanvasRenderingContext2D} ctx
  * @param {number} [timestamp=0]  — rAF timestamp (ms); drives pulse animations
  */
+/**
+ * drawVignette(ctx, w, h) — subtle radial edge-darkening for depth + cinematic
+ * framing. Drawn over the world layers, under the HUD. Pure cosmetic; reads nothing.
+ */
+function drawVignette(ctx, w, h) {
+  const grad = ctx.createRadialGradient(
+    w / 2, h / 2 + C.HUD_HEIGHT / 2, Math.min(w, h) * 0.38,
+    w / 2, h / 2, Math.max(w, h) * 0.72
+  );
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, 'rgba(8,12,16,0.55)');
+  ctx.save();
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Living-biome helpers (eased health, water shimmer, atmosphere particles)
+// All time-based & deterministic — NO Math.random (Rule 01).
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _dispHealth = null; // render-only eased health for smooth visual transitions
+
+/**
+ * _easeHealth(target) — eases a displayed health toward the real ecosystem_health
+ * each frame so the global vibrancy filter transitions smoothly instead of snapping
+ * on a day-step. Snaps on big jumps (new game). Render-only; mutates no state.
+ */
+function _easeHealth(target) {
+  if (_dispHealth === null || Math.abs(target - _dispHealth) > 40) _dispHealth = target;
+  else _dispHealth += (target - _dispHealth) * 0.05;
+  return _dispHealth;
+}
+
+/**
+ * drawWaterShimmer — animated caustic highlights on a water tile (additive, low alpha).
+ */
+function drawWaterShimmer(ctx, x, y, w, h, tx, ty, timestamp) {
+  const t = timestamp / 1000;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(170,220,255,0.6)';
+  ctx.lineWidth = Math.max(1, w * 0.03);
+  for (let k = 0; k < 2; k++) {
+    const phase = t * 12 + tx * 11 + ty * 7 + k * h * 0.55;
+    const yy = y + (((phase % h) + h) % h);
+    ctx.globalAlpha = 0.10 + 0.08 * Math.sin(t * 1.6 + tx + ty + k);
+    ctx.beginPath();
+    ctx.moveTo(x, yy);
+    ctx.quadraticCurveTo(x + w / 2, yy - h * 0.06, x + w, yy);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * drawAtmosphere — drifting motes that reflect ecosystem health: warm pollen /
+ * fireflies rising when healthy, sickly grey haze drifting when toxic. Cosmetic,
+ * deterministic motion (index + time, no Math.random).
+ */
+function drawAtmosphere(ctx, state, metrics, timestamp, cssW, cssH) {
+  const H = _dispHealth == null ? state.meta.ecosystem_health : _dispHealth;
+  const healthy = Math.max(0, Math.min(1, H / 100));
+  const N = 46;
+  const t = timestamp / 1000;
+  const top = C.HUD_HEIGHT;
+  const fieldH = Math.max(1, cssH - top);
+  ctx.save();
+  for (let i = 0; i < N; i++) {
+    const bx = ((i * 67) % 100) / 100;
+    const by = ((i * 131) % 100) / 100;
+    const spd = 0.4 + (i % 6) * 0.12;
+    let px, py, r, col, a;
+    if (healthy >= 0.5) {
+      px = bx * cssW + Math.sin(t * 0.4 + i) * 14;
+      py = top + ((((by * fieldH - t * spd * 16) % fieldH) + fieldH) % fieldH);
+      r = 1 + (i % 3) * 0.6;
+      col = `rgb(${180 + (i % 40)},${205 + (i % 45)},${120 + (i % 60)})`;
+      a = (0.10 + 0.16 * healthy) * (0.6 + 0.4 * Math.sin(t * 2 + i));
+    } else {
+      px = (((bx * cssW + t * spd * 20) % cssW) + cssW) % cssW;
+      py = top + by * fieldH + Math.sin(t * 0.5 + i) * 8;
+      r = 1.5 + (i % 4) * 0.9;
+      col = 'rgb(120,110,92)';
+      a = 0.05 + 0.10 * (1 - healthy);
+    }
+    ctx.globalAlpha = Math.max(0, Math.min(0.45, a));
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 export function render(state, ctx, timestamp = 0) {
   const canvas = ctx.canvas;
   // CSS layout dimensions (logical pixels, not physical)
@@ -939,7 +1071,7 @@ export function render(state, ctx, timestamp = 0) {
   const metrics = getTileMetrics(state, canvas);
 
   // ── Layer 1: Tile grid ────────────────────────────────────────────────────
-  drawTileGrid(state, ctx, metrics);
+  drawTileGrid(state, ctx, metrics, timestamp);
 
   // ── Layer 2: Node sprites ─────────────────────────────────────────────────
   drawNodes(state, ctx, metrics, timestamp);
@@ -949,6 +1081,10 @@ export function render(state, ctx, timestamp = 0) {
 
   // ── Layer 4: Field Agent ──────────────────────────────────────────────────
   drawAgent(state, ctx, metrics, timestamp);
+
+  // ── Atmosphere: drifting health-reactive particles + cinematic vignette ────
+  drawAtmosphere(ctx, state, metrics, timestamp, cssW, cssH);
+  drawVignette(ctx, cssW, cssH);
 
   // ── Layer 5: HUD bar ──────────────────────────────────────────────────────
   drawHUD(state, ctx, cssW);
