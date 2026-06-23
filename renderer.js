@@ -7,15 +7,23 @@
  * Rule 03: render() is READ-ONLY. It MUTATES NOTHING in state.
  *
  * Layers (drawn in order):
- *   1. Tile grid      — sprite or colour lerp by stressor/health; toxic crossfade
- *   2. Node sprites   — drawImage when loaded, else circle fallback
- *   3. DAG edges      — ONLY edge.revealed===true, prey→predator, animated pulse
- *   4. Field Agent    — drawImage(agent) or crosshair fallback
- *   5. HUD bar        — day, timer, health meter, tier, resources, scanner + ui_pack glyphs
+ *   1.  Tile grid      — noise-typed sprites; global biome filter (health→vibrancy);
+ *                        per-tile mirror; toxic crossfade; water shimmer; shoreline foam
+ *   1.5 Props          — deterministic scatter (trees/reeds/lilypads/…); biome filter
+ *   2.  Node sprites   — drawImage when loaded, else circle fallback; idle bob + shadow
+ *   3.  DAG edges      — ONLY edge.revealed===true, prey→predator, animated pulse
+ *   4.  Field Agent    — player.png spritesheet (4 dirs × 4 frames), eased pixel pos,
+ *                        walk-frame counter; agent.png / crosshair as two fallbacks
+ *   4.5 Scan ripples   — expanding rings on 'ecosystemx:scan' event
+ *   4.6 Atmosphere     — health-reactive drifting particles; cinematic vignette
+ *   5.  HUD bar        — day, timer, gradient health bar, resources, scanner + streak
  *
  * Exports:
- *   setupDPICanvas(canvas)       — call once on init; handles devicePixelRatio
- *   render(state, ctx, timestamp)— call every rAF frame; reads state, draws, returns nothing
+ *   setupDPICanvas(canvas)        — call once on init; handles devicePixelRatio
+ *   lerpColor(a, b, t)            — used by external modules
+ *   render(state, ctx, timestamp) — call every rAF frame; reads state, draws, returns nothing
+ *   pingCleanEffect(tx, ty)       — trigger one-shot green burst on tile (tx, ty)
+ *   flashCanvas(durationMs)       — trigger a brief full-canvas white flash (tier-up)
  */
 
 import { getSprite } from './ai_content.js';
@@ -340,7 +348,30 @@ function drawTileGrid(state, ctx, metrics, timestamp = 0) {
       const o  = (hash3(seed, tx + 17, ty + 31) * 4) | 0; // 0..3
       const fx = (o & 1) ? -1 : 1;
       const fy = (o & 2) ? -1 : 1;
+
+      // Round the corners of marsh/water tiles that border a DIFFERENT type, over
+      // a dirt base — turns blocky rectangular terrain boundaries into organic
+      // curves (grass-patch-on-soil / lake-with-banks), no transition tileset needed.
+      const rounded = (type === 'marsh' || type === 'water');
       ctx.save();
+      if (rounded) {
+        const dirt = getSprite('tile_land');
+        if (dirt) ctx.drawImage(dirt, x - 0.5, y - 0.5, w + 1, h + 1); // base shows at rounded corners
+        const R = Math.min(w, h) * 0.5;
+        const same = (dx, dy) => {
+          const nt = typeAtTile(state, seed, tx + dx, ty + dy);
+          return (nt === null ? type : nt) === type; // off-grid = same → don't round map border
+        };
+        const rTL = (!same(0, -1) && !same(-1, 0)) ? R : 0;
+        const rTR = (!same(0, -1) && !same(1, 0)) ? R : 0;
+        const rBR = (!same(0, 1) && !same(1, 0)) ? R : 0;
+        const rBL = (!same(0, 1) && !same(-1, 0)) ? R : 0;
+        if (rTL || rTR || rBR || rBL) {
+          ctx.beginPath();
+          ctx.roundRect(x, y, w, h, [rTL, rTR, rBR, rBL]);
+          ctx.clip();
+        }
+      }
       ctx.translate(x + w / 2, y + h / 2);
       ctx.scale(fx, fy);
       ctx.globalAlpha = 1;
@@ -366,6 +397,9 @@ function drawTileGrid(state, ctx, metrics, timestamp = 0) {
 
   // ── Restore normal filter before drawing grid lines / borders ───────────
   ctx.restore();
+
+  // ── Shoreline foam + banks where water meets land (organic lakes) ───────────
+  drawShorelines(state, ctx, metrics, seed, timestamp);
 
   // ── Protected-zone borders only (no ambient grid — keeps the biome organic) ──
   for (const [tileId, tile] of Object.entries(state.world.tiles)) {
@@ -414,6 +448,14 @@ function _spriteKeyForNode(node) {
 /**
  * drawNodes(state, ctx, metrics, timestamp)
  *
+ * Proximity fog-of-species logic (UNDISCOVERED non-stressor nodes only):
+ *   dist > TERRITORY_RADIUS  → completely hidden (nothing drawn)
+ *   dist ≤ TERRITORY_RADIUS  → faded ghost with an animated bouncing "!" above
+ *   discovered               → full render with labels (unchanged)
+ *
+ * Distance metric: Chebyshev (max of |Δx|, |Δy|) in tiles, so diagonals count.
+ * This function is READ-ONLY (Rule 03 — no state writes).
+ *
  * When sprite loaded (getSprite returns non-null):
  *   - extinct:  draws the _extinct variant (or fades base if no extinct sprite)
  *   - living:   draws sprite scaled by population/K_max; keystone + endangered
@@ -424,6 +466,9 @@ function _spriteKeyForNode(node) {
 function drawNodes(state, ctx, metrics, timestamp) {
   const BASE_R = Math.min(metrics.tileW, metrics.tileH) * 0.32;
   const SPRITE_BASE = Math.min(metrics.tileW, metrics.tileH) * 0.72; // max sprite draw size
+
+  const px = state.player.tile_x;
+  const py = state.player.tile_y;
 
   for (const node of Object.values(state.world.nodes)) {
     const centre = nodeCentre(node.id, state, metrics);
@@ -459,6 +504,66 @@ function drawNodes(state, ctx, metrics, timestamp) {
         ctx.globalAlpha  = 1;
       }
       continue;
+    }
+
+    // ── Proximity fog-of-species for UNDISCOVERED non-stressor nodes ─────────
+    if (!node.discovered) {
+      // Chebyshev distance from player to this node's tile
+      const tile = state.world.tiles[node.tileId];
+      let ntx, nty;
+      if (tile && tile.x !== undefined) { ntx = tile.x; nty = tile.y; }
+      else { const p = node.tileId.split('_'); ntx = +p[1]; nty = +p[2]; }
+      const dist = Math.max(Math.abs(ntx - px), Math.abs(nty - py));
+
+      if (dist > TERRITORY_RADIUS) continue; // completely hidden — draw nothing
+
+      // ── Within territory: draw faded ghost + bouncing "!" ────────────────
+      const { healthy } = _spriteKeyForNode(node);
+      const sprite = getSprite(healthy);
+      const ghostSize = SPRITE_BASE * 0.55;
+      ctx.save();
+      ctx.globalAlpha = 0.18 + 0.07 * Math.sin(timestamp / 900 + cx);
+      ctx.filter = 'grayscale(80%) brightness(0.7)';
+      if (sprite) {
+        ctx.drawImage(sprite, cx - ghostSize / 2, cy - ghostSize / 2, ghostSize, ghostSize);
+      } else {
+        ctx.fillStyle = nodeColor(node.kind);
+        ctx.beginPath();
+        ctx.arc(cx, cy, BASE_R * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // Prominent bouncing "!" alert badge above the ghost — high-contrast pin
+      const bangBob = Math.sin(timestamp / 360 + cx * 0.05) * 6;
+      const rBadge  = Math.max(12, metrics.tileH * 0.30);
+      const bangY   = cy - ghostSize * 0.7 - rBadge - 4 + bangBob;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // drop shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath(); ctx.arc(cx, bangY + 3, rBadge, 0, Math.PI * 2); ctx.fill();
+      // little pointer tail toward the species
+      ctx.beginPath();
+      ctx.moveTo(cx - rBadge * 0.4, bangY + rBadge * 0.6);
+      ctx.lineTo(cx + rBadge * 0.4, bangY + rBadge * 0.6);
+      ctx.lineTo(cx, bangY + rBadge * 1.4);
+      ctx.closePath();
+      ctx.fillStyle = C.ACCENT; ctx.fill();
+      // gold badge + white ring
+      ctx.fillStyle = C.ACCENT;
+      ctx.beginPath(); ctx.arc(cx, bangY, rBadge, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = Math.max(2, rBadge * 0.14);
+      ctx.strokeStyle = '#fff';
+      ctx.beginPath(); ctx.arc(cx, bangY, rBadge, 0, Math.PI * 2); ctx.stroke();
+      // dark exclamation
+      ctx.fillStyle = '#1a1208';
+      ctx.font = `bold ${Math.round(rBadge * 1.5)}px monospace`;
+      ctx.fillText('!', cx, bangY + 1);
+      ctx.restore();
+
+      continue; // skip the normal drawing below
     }
 
     // ── Extinct node ─────────────────────────────────────────────────────────
@@ -508,9 +613,12 @@ function drawNodes(state, ctx, metrics, timestamp) {
     const { healthy } = _spriteKeyForNode(node);
     const sprite  = getSprite(healthy);
 
+    // Discovery scale-pop: 1.35 → 1.0 over ~400ms the first time a node is drawn discovered.
+    const pop = _popScale(node.id, timestamp);
+
     if (sprite) {
-      // Scale sprite by population (min 40% size, max 100%)
-      const scaledSize = SPRITE_BASE * (0.40 + 0.60 * Math.sqrt(relPop));
+      // Scale sprite by population (min 40% size, max 100%), then apply pop scale
+      const scaledSize = SPRITE_BASE * (0.40 + 0.60 * Math.sqrt(relPop)) * pop;
       // Soft ground shadow lifts the sprite off the tile (depth)
       ctx.save();
       ctx.globalAlpha = opacity * 0.35;
@@ -550,7 +658,7 @@ function drawNodes(state, ctx, metrics, timestamp) {
       ctx.restore();
     } else {
       // ── Shape fallback ─────────────────────────────────────────────────
-      const radius = BASE_R * (0.35 + 0.65 * Math.sqrt(relPop));
+      const radius = BASE_R * (0.35 + 0.65 * Math.sqrt(relPop)) * pop;
       const color  = nodeColor(node.kind);
       ctx.save();
       ctx.globalAlpha = opacity;
@@ -578,8 +686,8 @@ function drawNodes(state, ctx, metrics, timestamp) {
       ctx.restore();
     }
 
-    // Node name label (always below sprite/shape)
-    if (node.discovered || node.population > 0) {
+    // Node name label (only for discovered nodes — undiscovered hit 'continue' above)
+    if (node.discovered) {
       const labelY = sprite
         ? cy + (SPRITE_BASE * (0.40 + 0.60 * Math.sqrt(relPop))) / 2 + 3
         : cy + BASE_R * (0.35 + 0.65 * Math.sqrt(relPop)) + 3;
@@ -674,79 +782,154 @@ function drawEdges(state, ctx, metrics, timestamp) {
 /**
  * drawAgent(state, ctx, metrics, timestamp)
  *
- * Draws agent.png centred on the player tile.
- * Fallback: original crosshair indicator.
+ * Primary path — player.png spritesheet (COLS=4 frames × ROWS=4 directions):
+ *   • Renderer-local pixel position eases toward the player's tile centre each
+ *     frame (snaps on large jumps / new game). Rule 03: no GameState writes.
+ *   • Walk frame advances at PLAYER_WALK_FPS (8 fps) while the avatar is still
+ *     moving; held at frame 0 when idle.
+ *   • Sprite is drawn BOTTOM-ANCHORED on the eased position, scaled 1.4× a tile,
+ *     with a soft elliptical ground shadow beneath it.
+ *   • Tile highlight and "L nn" stressor readout always drawn (both paths).
+ *
+ * Fallback — if player.png is absent but agent.png is loaded, uses agent.png
+ * (centred, as before). If neither is loaded, falls back to the crosshair.
  */
 function drawAgent(state, ctx, metrics, timestamp) {
-  const { tile_x: tx, tile_y: ty } = state.player;
-  const x  = metrics.offsetX + tx * metrics.tileW;
-  const y  = metrics.offsetY + ty * metrics.tileH;
-  const w  = metrics.tileW;
-  const h  = metrics.tileH;
-  const cx = x + w / 2;
-  const cy = y + h / 2;
+  const { tile_x: tx, tile_y: ty, facing = 'down' } = state.player;
+  const tileX  = metrics.offsetX + tx * metrics.tileW;
+  const tileY  = metrics.offsetY + ty * metrics.tileH;
+  const tileW  = metrics.tileW;
+  const tileH  = metrics.tileH;
 
-  // Tile highlight (both sprite and fallback paths)
+  // Target pixel centre of the player's tile
+  const targetX = tileX + tileW / 2;
+  const targetY = tileY + tileH / 2;
+
+  // ── Ease pixel position (renderer-local, NOT GameState) ──────────────────
+  if (_agentPixel === null || Math.hypot(targetX - _agentPixel.x, targetY - _agentPixel.y) > tileW * 3) {
+    // Snap on first frame or after a large teleport (new game / seed change)
+    _agentPixel = { x: targetX, y: targetY };
+  } else {
+    // α = 0.22 per frame @60 fps → residual after 13 frames (~220 ms) < 2 px,
+    // so the avatar arrives at the next tile just as the hold-to-walk step fires,
+    // producing continuous gliding motion rather than snap-then-wait.
+    _agentPixel.x += (targetX - _agentPixel.x) * 0.22;
+    _agentPixel.y += (targetY - _agentPixel.y) * 0.22;
+  }
+  const { x: easedX, y: easedY } = _agentPixel;
+
+  // Is the avatar still in motion? (threshold: 0.5px)
+  const moving = Math.hypot(targetX - easedX, targetY - easedY) > 0.5;
+
+  // ── Advance walk frame at PLAYER_WALK_FPS while moving ───────────────────
+  if (moving) {
+    const dt = Math.min(100, timestamp - _agentLastTs); // cap at 100ms to avoid jumps
+    if (dt > 0) {
+      // Accumulate fractional frame advance; integer part ticks _agentFrame
+      const advance = dt / 1000 * PLAYER_WALK_FPS;
+      _agentFrame = (_agentFrame + advance) % PLAYER_COLS;
+    }
+  } else {
+    _agentFrame = 0; // idle → rest pose (frame 0)
+  }
+  _agentLastTs = timestamp;
+
+  // ── Tile highlight (always, under the avatar) ────────────────────────────
   const pulse = 0.3 + 0.2 * Math.sin(timestamp / 500);
   ctx.save();
   ctx.fillStyle = `rgba(240, 165, 0, ${pulse})`;
-  ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+  ctx.fillRect(tileX + 2, tileY + 2, tileW - 4, tileH - 4);
   ctx.restore();
 
+  // ── Draw avatar ──────────────────────────────────────────────────────────
+  const playerSheet = getSprite('player');
   const agentSprite = getSprite('agent');
-  if (agentSprite) {
-    const size = Math.min(w, h) * 0.78;
+
+  if (playerSheet) {
+    // ── Spritesheet path ─────────────────────────────────────────────────
+    const frameW  = playerSheet.naturalWidth  / PLAYER_COLS;
+    const frameH  = playerSheet.naturalHeight / PLAYER_ROWS;
+    const row     = _facingRow(facing);
+    const col     = Math.floor(_agentFrame) % PLAYER_COLS;
+
+    // Draw size: 1.4× tile, bottom-anchored on eased position
+    const drawH   = tileH * 1.4;
+    const drawW   = drawH * (frameW / frameH);  // preserve sprite aspect ratio
+    const drawTop = easedY + tileH / 2 - drawH; // bottom anchor = tile bottom
+
+    // Soft elliptical ground shadow
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle   = '#000';
+    ctx.beginPath();
+    ctx.ellipse(easedX, drawTop + drawH - drawH * 0.04,
+                drawW * 0.28, drawH * 0.07, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Sprite frame
+    ctx.save();
+    ctx.globalAlpha = 0.97;
+    ctx.drawImage(
+      playerSheet,
+      col * frameW, row * frameH, frameW, frameH,  // source rect
+      easedX - drawW / 2, drawTop, drawW, drawH     // dest rect
+    );
+    ctx.restore();
+
+  } else if (agentSprite) {
+    // ── Legacy agent.png fallback (centred) ──────────────────────────────
+    const size = Math.min(tileW, tileH) * 0.78;
     ctx.save();
     ctx.globalAlpha = 0.95;
-    ctx.drawImage(agentSprite, cx - size / 2, cy - size / 2, size, size);
+    ctx.drawImage(agentSprite, easedX - size / 2, easedY - size / 2, size, size);
     ctx.restore();
+
   } else {
-    // ── Crosshair fallback ──────────────────────────────────────────────────
+    // ── Crosshair fallback ─────────────────────────────────────────────
     ctx.save();
     ctx.strokeStyle = C.ACCENT;
     ctx.lineWidth   = 2;
     ctx.globalAlpha = 0.9;
     ctx.beginPath();
-    ctx.arc(cx, cy, Math.min(w, h) * 0.36, 0, Math.PI * 2);
+    ctx.arc(easedX, easedY, Math.min(tileW, tileH) * 0.36, 0, Math.PI * 2);
     ctx.stroke();
-
     ctx.fillStyle   = C.ACCENT;
     ctx.globalAlpha = 1;
     ctx.beginPath();
-    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.arc(easedX, easedY, 3, 0, Math.PI * 2);
     ctx.fill();
-
-    const cr = Math.min(w, h) * 0.42;
-    const ci = Math.min(w, h) * 0.18;
+    const cr = Math.min(tileW, tileH) * 0.42;
+    const ci = Math.min(tileW, tileH) * 0.18;
     ctx.lineWidth   = 1;
     ctx.globalAlpha = 0.7;
-    [[cx - cr, cy, cx - ci, cy],
-     [cx + ci, cy, cx + cr, cy],
-     [cx, cy - cr, cx, cy - ci],
-     [cx, cy + ci, cx, cy + cr]].forEach(([ax, ay, bx, by]) => {
+    [[easedX - cr, easedY, easedX - ci, easedY],
+     [easedX + ci, easedY, easedX + cr, easedY],
+     [easedX, easedY - cr, easedX, easedY - ci],
+     [easedX, easedY + ci, easedX, easedY + cr]].forEach(([ax, ay, bx, by]) => {
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
     });
     ctx.restore();
   }
 
-  // ── UX: current tile's stressor readout (the tile bioremediation will clean) ──
+  // ── UX: current tile's stressor readout (bioremediation targeting aid) ───
   const curTile = state.world.tiles[`t_${tx}_${ty}`]
     || Object.values(state.world.tiles).find(t => t.x === tx && t.y === ty);
   if (curTile) {
-    const L = Math.round(curTile.stressor ?? 0);
-    const col = L > 60 ? C.DANGER : L > 30 ? C.ACCENT : '#4ccea0';
+    const L     = Math.round(curTile.stressor ?? 0);
+    const col   = L > 60 ? C.DANGER : L > 30 ? C.ACCENT : '#4ccea0';
     const label = `L ${L}`;
     ctx.save();
-    ctx.font = 'bold 11px monospace';
-    ctx.textAlign = 'center';
+    ctx.font         = 'bold 11px monospace';
+    ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
-    const tw = ctx.measureText(label).width + 14;
-    const py = y - 9;
+    const labelW = ctx.measureText(label).width + 14;
+    const labelY = tileY - 9;
     ctx.fillStyle = 'rgba(10,14,20,0.88)';
-    ctx.fillRect(cx - tw / 2, py - 8, tw, 16);
+    ctx.fillRect(targetX - labelW / 2, labelY - 8, labelW, 16);
     ctx.fillStyle = col;
-    ctx.fillRect(cx - tw / 2, py - 8, 3, 16);
-    ctx.fillText(label, cx, py);
+    ctx.fillRect(targetX - labelW / 2, labelY - 8, 3, 16);
+    ctx.fillText(label, targetX, labelY);
     ctx.restore();
   }
 }
@@ -853,12 +1036,28 @@ function drawHUD(state, ctx, canvasW) {
   ctx.roundRect(mx, my + 10, METER_W, METER_H, 3);
   ctx.fill();
 
-  // Bar fill — colour by tier
-  const hFrac = Math.max(0, Math.min(1, ecosystem_health / 100));
-  ctx.fillStyle = TIER_COLORS[market_tier] || C.TILE_HEALTHY;
-  ctx.beginPath();
-  ctx.roundRect(mx, my + 10, Math.round(METER_W * hFrac), METER_H, 3);
-  ctx.fill();
+  // Bar fill — gradient by tier, eased for a smooth animated fill
+  const hVal  = _dispHealth == null ? ecosystem_health : _dispHealth;
+  const hFrac = Math.max(0, Math.min(1, hVal / 100));
+  const fillW = Math.round(METER_W * hFrac);
+  const tierCol = TIER_COLORS[market_tier] || C.TILE_HEALTHY;
+  if (fillW > 0) {
+    const g = ctx.createLinearGradient(mx, my + 10, mx, my + 10 + METER_H);
+    g.addColorStop(0, lerpColor(tierCol, '#ffffff', 0.4));
+    g.addColorStop(1, tierCol);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.roundRect(mx, my + 10, fillW, METER_H, 3);
+    ctx.fill();
+    // glossy top highlight
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(mx, my + 10, fillW, METER_H * 0.42, 3);
+    ctx.fill();
+    ctx.restore();
+  }
 
   // Percentage + tier label to the right of the bar
   ctx.font      = 'bold 11px monospace';
@@ -940,20 +1139,8 @@ function drawHUD(state, ctx, canvasW) {
 // Main render function (exported)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * render(state, ctx, timestamp)
- *
- * Called every requestAnimationFrame tick from main.js.
- * READS state only — mutates nothing.
- *
- * @param {object} state      — GameState singleton (or any compatible object)
- * @param {CanvasRenderingContext2D} ctx
- * @param {number} [timestamp=0]  — rAF timestamp (ms); drives pulse animations
- */
-/**
- * drawVignette(ctx, w, h) — subtle radial edge-darkening for depth + cinematic
- * framing. Drawn over the world layers, under the HUD. Pure cosmetic; reads nothing.
- */
+// drawVignette — subtle radial edge-darkening for depth + cinematic framing.
+// Drawn over the world layers, under the HUD. Pure cosmetic; reads nothing.
 function drawVignette(ctx, w, h) {
   const grad = ctx.createRadialGradient(
     w / 2, h / 2 + C.HUD_HEIGHT / 2, Math.min(w, h) * 0.38,
@@ -1046,6 +1233,395 @@ function drawAtmosphere(ctx, state, metrics, timestamp, cssW, cssH) {
   ctx.restore();
 }
 
+/**
+ * typeAtTile — resolves the rendered type of a grid cell the same way drawTileGrid
+ * does (source tiles fixed, others from the noise field). Returns null off-grid.
+ */
+function typeAtTile(state, seed, tx, ty) {
+  const t = state.world.tiles[`t_${tx}_${ty}`]
+    || Object.values(state.world.tiles).find(o => o.x === tx && o.y === ty);
+  if (!t) return null;
+  return t.type === 'source' ? 'source' : tileTypeFromNoise(seed, tx, ty);
+}
+
+/**
+ * _foamEdge — draws a sandy bank + animated foam + light shallows along one edge
+ * of a water tile (dir: 'top'|'bottom'|'left'|'right'). Drawn unfiltered so foam
+ * stays bright. This is what turns rectangular water blobs into banked lakes.
+ */
+function _foamEdge(ctx, x, y, w, h, dir, t, ph) {
+  const band = Math.max(3, w * 0.16);
+  const sand = 'rgba(120,102,74,0.5)';
+  const foam = `rgba(232,248,255,${0.38 + 0.22 * Math.sin(t * 3 + ph)})`;
+  ctx.save();
+  if (dir === 'top') {
+    ctx.fillStyle = sand; ctx.fillRect(x, y - band * 0.45, w, band * 0.45);
+    const g = ctx.createLinearGradient(0, y, 0, y + band);
+    g.addColorStop(0, 'rgba(196,232,248,0.45)'); g.addColorStop(1, 'rgba(196,232,248,0)');
+    ctx.fillStyle = g; ctx.fillRect(x, y, w, band);
+    ctx.fillStyle = foam; ctx.fillRect(x, y - 1, w, 2);
+  } else if (dir === 'bottom') {
+    ctx.fillStyle = sand; ctx.fillRect(x, y + h, w, band * 0.45);
+    const g = ctx.createLinearGradient(0, y + h, 0, y + h - band);
+    g.addColorStop(0, 'rgba(196,232,248,0.45)'); g.addColorStop(1, 'rgba(196,232,248,0)');
+    ctx.fillStyle = g; ctx.fillRect(x, y + h - band, w, band);
+    ctx.fillStyle = foam; ctx.fillRect(x, y + h - 1, w, 2);
+  } else if (dir === 'left') {
+    ctx.fillStyle = sand; ctx.fillRect(x - band * 0.45, y, band * 0.45, h);
+    const g = ctx.createLinearGradient(x, 0, x + band, 0);
+    g.addColorStop(0, 'rgba(196,232,248,0.45)'); g.addColorStop(1, 'rgba(196,232,248,0)');
+    ctx.fillStyle = g; ctx.fillRect(x, y, band, h);
+    ctx.fillStyle = foam; ctx.fillRect(x - 1, y, 2, h);
+  } else {
+    ctx.fillStyle = sand; ctx.fillRect(x + w, y, band * 0.45, h);
+    const g = ctx.createLinearGradient(x + w, 0, x + w - band, 0);
+    g.addColorStop(0, 'rgba(196,232,248,0.45)'); g.addColorStop(1, 'rgba(196,232,248,0)');
+    ctx.fillStyle = g; ctx.fillRect(x + w - band, y, band, h);
+    ctx.fillStyle = foam; ctx.fillRect(x + w - 1, y, 2, h);
+  }
+  ctx.restore();
+}
+
+/**
+ * drawShorelines — for every water tile, draw foam/banks on each edge that borders
+ * a non-water cell, so water bodies read as organic lakes with shores.
+ */
+function drawShorelines(state, ctx, metrics, seed, timestamp) {
+  const t = timestamp / 1000;
+  const dirs = [[0, -1, 'top'], [0, 1, 'bottom'], [-1, 0, 'left'], [1, 0, 'right']];
+  for (const [tileId, tile] of Object.entries(state.world.tiles)) {
+    let tx, ty;
+    if (tile.x !== undefined) { tx = tile.x; ty = tile.y; }
+    else { const p = tileId.split('_'); tx = +p[1]; ty = +p[2]; }
+    const type = tile.type === 'source' ? 'source' : tileTypeFromNoise(seed, tx, ty);
+    if (type !== 'water') continue;
+    const { x, y, w, h } = tilePx(tileId, state, metrics);
+
+    // Clip the foam to the SAME rounded corners the water fill uses, so the
+    // water border curves with the tile instead of staying square.
+    const R = Math.min(w, h) * 0.5;
+    const sameWater = (dx, dy) => {
+      const nt = typeAtTile(state, seed, tx + dx, ty + dy);
+      return (nt === null ? 'water' : nt) === 'water';
+    };
+    const radii = [
+      (!sameWater(0, -1) && !sameWater(-1, 0)) ? R : 0, // TL
+      (!sameWater(0, -1) && !sameWater(1, 0))  ? R : 0, // TR
+      (!sameWater(0, 1)  && !sameWater(1, 0))  ? R : 0, // BR
+      (!sameWater(0, 1)  && !sameWater(-1, 0)) ? R : 0, // BL
+    ];
+
+    ctx.save();
+    if (radii.some(r => r > 0)) {
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, radii);
+      ctx.clip();
+    }
+    for (const [dx, dy, dir] of dirs) {
+      const nt = typeAtTile(state, seed, tx + dx, ty + dy);
+      if (!nt || nt === 'water') continue; // only at water↔land boundaries
+      _foamEdge(ctx, x, y, w, h, dir, t, tx + ty);
+    }
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Proximity discovery constants (renderer uses these for the fog-of-species UI)
+// ─────────────────────────────────────────────────────────────────────────────
+/** Species hidden beyond this tile-distance from the player (Chebyshev). */
+export const TERRITORY_RADIUS = 3;
+/** Auto-discover a species when the player enters this tile-distance. */
+export const DISCOVER_RADIUS  = 1.4;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Player spritesheet constants
+// Sheet layout: COLS=4 walk frames × ROWS=4 directions.
+// Row order is exposed as constants so it's trivial to flip if the asset ships
+// with a different row order (just edit these four lines).
+// ─────────────────────────────────────────────────────────────────────────────
+const PLAYER_COLS        = 4;   // walk-animation frames per direction row
+const PLAYER_ROWS        = 4;   // one row per facing direction
+const PLAYER_ROW_DOWN    = 0;
+const PLAYER_ROW_LEFT    = 1;
+const PLAYER_ROW_RIGHT   = 2;
+const PLAYER_ROW_UP      = 3;
+const PLAYER_WALK_FPS    = 8;   // walk-frame advances 8 times per second
+
+/** _facingRow(facing) → spritesheet row index */
+function _facingRow(facing) {
+  switch (facing) {
+    case 'up':    return PLAYER_ROW_UP;
+    case 'left':  return PLAYER_ROW_LEFT;
+    case 'right': return PLAYER_ROW_RIGHT;
+    default:      return PLAYER_ROW_DOWN;  // 'down' + fallback
+  }
+}
+
+// Renderer-local animation state — NOT part of GameState (Rule 03).
+// _agentPixel: eased pixel position (x, y) of the player avatar.
+// _agentFrame: current walk-animation column index (0..PLAYER_COLS-1).
+// _agentLastTs: previous timestamp, used to advance frame at PLAYER_WALK_FPS.
+let _agentPixel  = null;   // { x, y } in CSS pixels; null = not yet initialised
+let _agentFrame  = 0;      // 0..PLAYER_COLS-1
+let _agentLastTs = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Discovery scale-pop — renderer-local map of nodeId → timestamp when first
+// discovered. drawNodes reads this to apply a 1.35→1.0 scale over ~400ms.
+// No GameState writes (Rule 03).
+// ─────────────────────────────────────────────────────────────────────────────
+const _discoveredAt = new Map(); // nodeId → performance.now() at discovery
+
+/** Called by main.js immediately after a node is discovered. */
+export function markNodeDiscovered(nodeId) {
+  if (!_discoveredAt.has(nodeId)) {
+    _discoveredAt.set(nodeId, performance.now());
+  }
+}
+
+/** Scale factor for the discovery pop (1.35 → 1.0 over POP_MS). Read-only. */
+const _POP_MS = 400;
+function _popScale(nodeId, timestamp) {
+  const t0 = _discoveredAt.get(nodeId);
+  if (t0 === undefined) return 1;
+  const age = timestamp - t0;
+  if (age >= _POP_MS) return 1;
+  const frac = age / _POP_MS;
+  // Ease out cubic: starts at 1.35, arrives at 1.0
+  const ease = 1 - (1 - frac) * (1 - frac) * (1 - frac);
+  return 1.35 - 0.35 * ease;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Clean-burst effect — one-shot green expanding ring + rising sparkle dots
+// on a tile after successful bioremediation. Renderer-local registry only.
+// ─────────────────────────────────────────────────────────────────────────────
+const _cleanBursts = [];
+const _CLEAN_MS = 600;
+
+/**
+ * pingCleanEffect(tx, ty) — register a one-shot "clean burst" on tile (tx, ty).
+ * Called by main.js after a successful bioremediation intervention.
+ * Deterministic sparkle scatter uses tx/ty + index, NO Math.random (Rule 01).
+ *
+ * @param {number} tx  tile x coord
+ * @param {number} ty  tile y coord
+ */
+export function pingCleanEffect(tx, ty) {
+  _cleanBursts.push({ tx, ty, t0: performance.now() });
+  if (_cleanBursts.length > 8) _cleanBursts.shift();
+}
+
+function drawCleanBursts(ctx, metrics, timestamp) {
+  for (let i = _cleanBursts.length - 1; i >= 0; i--) {
+    const b   = _cleanBursts[i];
+    const age = timestamp - b.t0;
+    if (age < 0 || age > _CLEAN_MS) { _cleanBursts.splice(i, 1); continue; }
+    const frac = age / _CLEAN_MS;
+    const cx   = metrics.offsetX + b.tx * metrics.tileW + metrics.tileW / 2;
+    const cy   = metrics.offsetY + b.ty * metrics.tileH + metrics.tileH / 2;
+    const maxR = Math.max(metrics.tileW, metrics.tileH) * 1.1;
+
+    ctx.save();
+
+    // ── Green expanding ring ──────────────────────────────────────────────
+    const ringAlpha = (1 - frac) * 0.72;
+    ctx.globalAlpha = ringAlpha;
+    ctx.strokeStyle = '#4ccea0';
+    ctx.lineWidth   = 3 * (1 - frac) + 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, frac * maxR, 0, Math.PI * 2);
+    ctx.stroke();
+    // Second ring offset by 120ms
+    if (frac > 0.2) {
+      const f2 = (frac - 0.2) / 0.8;
+      ctx.globalAlpha = (1 - f2) * 0.45;
+      ctx.lineWidth   = 2 * (1 - f2) + 0.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, f2 * maxR * 0.75, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // ── Rising sparkle dots (deterministic scatter — tx/ty + index, no Math.random) ──
+    const N_SPARKS = 6;
+    for (let k = 0; k < N_SPARKS; k++) {
+      // Deterministic angle and speed per sparkle via hash3-style formula
+      const angleBase = (k / N_SPARKS) * Math.PI * 2 + (b.tx * 0.37 + b.ty * 0.53 + k * 1.13);
+      const speedR    = 0.45 + ((k * 7 + b.tx * 3 + b.ty * 5) % 10) / 10 * 0.4; // 0.45–0.85
+      const r         = frac * maxR * speedR;
+      const riseY     = -frac * metrics.tileH * 0.55; // rise upward over time
+      const sx        = cx + Math.cos(angleBase) * r;
+      const sy        = cy + Math.sin(angleBase) * r * 0.35 + riseY; // compressed vertically
+      const dotR      = Math.max(1.5, metrics.tileW * 0.055) * (1 - frac);
+      const dotAlpha  = (1 - frac) * 0.85;
+      ctx.globalAlpha = dotAlpha;
+      ctx.fillStyle   = k % 2 === 0 ? '#4ccea0' : '#b8ffd8';
+      ctx.beginPath();
+      ctx.arc(sx, sy, dotR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canvas flash — full-canvas white overlay that fades for a tier-up moment.
+// Renderer-local; no GameState writes (Rule 03).
+// ─────────────────────────────────────────────────────────────────────────────
+let _flashUntil = 0;   // performance.now() timestamp when flash should have fully faded
+let _flashMs    = 300; // duration of each flash
+
+/**
+ * flashCanvas(durationMs) — trigger a brief full-canvas white flash.
+ * Called by main.js on tier-up. Renderer draws a fading white overlay.
+ * @param {number} [durationMs=300]
+ */
+export function flashCanvas(durationMs = 300) {
+  _flashMs    = durationMs;
+  _flashUntil = performance.now() + durationMs;
+}
+
+function drawCanvasFlash(ctx, cssW, cssH, timestamp) {
+  if (timestamp >= _flashUntil) return;
+  const age   = _flashMs - (_flashUntil - timestamp);
+  const frac  = Math.max(0, Math.min(1, age / _flashMs)); // 0 → 1
+  const alpha = (1 - frac) * 0.55; // fade from 0.55 → 0
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle   = '#ffffff';
+  ctx.fillRect(0, 0, cssW, cssH);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scan-ripple effect — expanding rings when a tile is successfully scanned.
+// Self-contained: listens for the 'ecosystemx:scan' event (input.js dispatches it).
+// ─────────────────────────────────────────────────────────────────────────────
+const _ripples = [];
+const _RIPPLE_MS = 750;
+if (typeof window !== 'undefined') {
+  window.addEventListener('ecosystemx:scan', (e) => {
+    if (e.detail && e.detail.discovered) {
+      _ripples.push({ tx: e.detail.tx, ty: e.detail.ty, t0: performance.now() });
+      if (_ripples.length > 12) _ripples.shift();
+    }
+  });
+}
+
+function drawScanRipples(ctx, metrics, timestamp) {
+  for (let i = _ripples.length - 1; i >= 0; i--) {
+    const rp = _ripples[i];
+    const age = timestamp - rp.t0;
+    if (age < 0 || age > _RIPPLE_MS) { _ripples.splice(i, 1); continue; }
+    const cx = metrics.offsetX + rp.tx * metrics.tileW + metrics.tileW / 2;
+    const cy = metrics.offsetY + rp.ty * metrics.tileH + metrics.tileH / 2;
+    const maxR = Math.max(metrics.tileW, metrics.tileH) * 1.15;
+    ctx.save();
+    for (let k = 0; k < 2; k++) {
+      const pp = (age / _RIPPLE_MS) - k * 0.18;
+      if (pp <= 0) continue;
+      ctx.globalAlpha = (1 - pp) * 0.6;
+      ctx.strokeStyle = C.EDGE;
+      ctx.lineWidth = 2.5 * (1 - pp) + 0.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, pp * maxR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decorative prop scatter — deterministic (seed hash, no Math.random), cached.
+// Trees/bushes/grass on land, reeds/lilypads near & in water, rocks + flowers as
+// accents. Skips node tiles + the stressor source. Drawn through the biome filter
+// so props desaturate with the wetland's health.
+// ─────────────────────────────────────────────────────────────────────────────
+let _propCache = { seed: null, items: null };
+
+function _propItems(state, seed) {
+  if (_propCache.seed === seed && _propCache.items) return _propCache.items;
+  const items = [];
+  const nodeTiles = new Set(Object.values(state.world.nodes).map(n => n.tileId));
+  for (const [tileId, tile] of Object.entries(state.world.tiles)) {
+    if (nodeTiles.has(tileId)) continue;
+    let tx, ty;
+    if (tile.x !== undefined) { tx = tile.x; ty = tile.y; }
+    else { const p = tileId.split('_'); tx = +p[1]; ty = +p[2]; }
+    const type = tile.type === 'source' ? 'source' : tileTypeFromNoise(seed, tx, ty);
+    if (type === 'source') continue;
+
+    const a  = hash3(seed, tx * 3 + 1, ty * 5 + 2);
+    const b  = hash3(seed, tx * 7 + 9, ty * 11 + 4);
+    const ox = hash3(seed, tx * 13 + 5, ty * 17 + 6) - 0.5;
+    const oy = hash3(seed, tx * 19 + 7, ty * 23 + 8) - 0.5;
+
+    let prop = null, sizeFrac = 0.6, sway = false;
+    if (type === 'water') {
+      if (a < 0.22) { prop = 'prop_lilypad'; sizeFrac = 0.70; }
+    } else {
+      const nearWater =
+        typeAtTile(state, seed, tx + 1, ty) === 'water' || typeAtTile(state, seed, tx - 1, ty) === 'water' ||
+        typeAtTile(state, seed, tx, ty + 1) === 'water' || typeAtTile(state, seed, tx, ty - 1) === 'water';
+      if (nearWater && a < 0.50) { prop = 'prop_reeds'; sizeFrac = 0.78; sway = true; }
+      else if (a < 0.46) {
+        if      (b < 0.12) { prop = 'prop_tree';    sizeFrac = 1.15; }
+        else if (b < 0.34) { prop = 'prop_bush';    sizeFrac = 0.72; }
+        else if (b < 0.66) { prop = 'prop_grass';   sizeFrac = 0.50; sway = true; }
+        else if (b < 0.82) { prop = 'prop_flowers'; sizeFrac = 0.50; }
+        else if (b < 0.93) { prop = 'prop_rock';    sizeFrac = 0.62; }
+        else               { prop = 'prop_stump';   sizeFrac = 0.66; }
+      }
+    }
+    if (prop) items.push({
+      tileId, prop,
+      sizeFrac: sizeFrac * (0.80 + 0.40 * (oy + 0.5)),   // wider scale variety
+      ox, oy, sway,
+      flip:  hash3(seed, tx * 29 + 3, ty * 31 + 5) < 0.5, // ~half mirrored
+      alpha: 0.82 + 0.18 * hash3(seed, tx * 37 + 1, ty * 41 + 2), // subtle brightness variance
+    });
+  }
+  _propCache = { seed, items };
+  return items;
+}
+
+function drawProps(state, ctx, metrics, timestamp) {
+  const seed = state.meta.seed ?? 12345;
+  const H = _dispHealth == null ? state.meta.ecosystem_health : _dispHealth;
+  const items = _propItems(state, seed);
+  ctx.save();
+  ctx.filter = _biomeFilter(H);
+  for (const it of items) {
+    const spr = getSprite(it.prop);
+    if (!spr) continue;
+    const { x, y, w, h } = tilePx(it.tileId, state, metrics);
+    const size = Math.min(w, h) * it.sizeFrac;
+    const px = x + w / 2 + it.ox * w * 0.25;
+    const bottomY = y + h - 1 + it.oy * h * 0.08;
+    const bob = it.sway ? Math.sin(timestamp / 600 + x * 0.05 + y * 0.03) * size * 0.04 : 0;
+    ctx.save();
+    ctx.globalAlpha = it.alpha;
+    ctx.translate(px, bottomY - size / 2 + bob);
+    if (it.flip) ctx.scale(-1, 1);
+    ctx.drawImage(spr, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/**
+ * render(state, ctx, timestamp)
+ *
+ * Called every requestAnimationFrame tick from main.js.
+ * READ-ONLY — mutates nothing in GameState (Rule 03).
+ * Renderer-private display vars (_dispHealth, _ripples, _propCache) are NOT GameState.
+ *
+ * @param {object} state       — GameState singleton (or compatible object)
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} [timestamp=0] — rAF timestamp (ms); drives all animations
+ */
 export function render(state, ctx, timestamp = 0) {
   const canvas = ctx.canvas;
   // CSS layout dimensions (logical pixels, not physical)
@@ -1073,6 +1649,9 @@ export function render(state, ctx, timestamp = 0) {
   // ── Layer 1: Tile grid ────────────────────────────────────────────────────
   drawTileGrid(state, ctx, metrics, timestamp);
 
+  // ── Layer 1.5: Decorative props (under nodes/agent) ─────────────────────────
+  drawProps(state, ctx, metrics, timestamp);
+
   // ── Layer 2: Node sprites ─────────────────────────────────────────────────
   drawNodes(state, ctx, metrics, timestamp);
 
@@ -1082,9 +1661,18 @@ export function render(state, ctx, timestamp = 0) {
   // ── Layer 4: Field Agent ──────────────────────────────────────────────────
   drawAgent(state, ctx, metrics, timestamp);
 
+  // ── Scan ripples (transient feedback on a successful scan) ──────────────────
+  drawScanRipples(ctx, metrics, timestamp);
+
+  // ── Clean bursts (bioremediation tile juice) ──────────────────────────────
+  drawCleanBursts(ctx, metrics, timestamp);
+
   // ── Atmosphere: drifting health-reactive particles + cinematic vignette ────
   drawAtmosphere(ctx, state, metrics, timestamp, cssW, cssH);
   drawVignette(ctx, cssW, cssH);
+
+  // ── Tier-up canvas flash (drawn above vignette, below HUD) ───────────────
+  drawCanvasFlash(ctx, cssW, cssH, timestamp);
 
   // ── Layer 5: HUD bar ──────────────────────────────────────────────────────
   drawHUD(state, ctx, cssW);

@@ -17,16 +17,21 @@
 
 import GameState            from './state.js';
 import { generateWorld }    from './generator.js';
-import { render, setupDPICanvas } from './renderer.js';
+import {
+  render, setupDPICanvas, DISCOVER_RADIUS,
+  markNodeDiscovered, pingCleanEffect, flashCanvas,
+} from './renderer.js';
 import { runDailyStep, computeHealth } from './ecosystem.js';
-import { initInput, triggerScan }    from './input.js';
+import { initInput, triggerScan, scanTile, tickMovement } from './input.js';
 import { buildNotebookHTML }  from './notebook.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
 import { updateTier, loadDialogue } from './hysteria.js';
 import {
-  loadAIContent, getFieldReportFragment,
+  loadAIContent, getFieldReportFragment, computeRunGrade,
+  getAICodexEntry,
   initArtLayers,
   initAudio, setHealthAudio, playWinSting,
+  playDiscoverChime, playInterveneChime, playTierUp,
 } from './ai_content.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,9 +171,9 @@ function showStartCard() {
       </div>
       <div class="start-hints">
         <p style="opacity:0.5;font-size:0.8em;margin-top:16px;">
-          🖱 Click tiles to move &amp; scan &nbsp;|&nbsp;
+          🖱 Click a tile to move &nbsp;|&nbsp;
           ⌨ Arrow keys / WASD to move &nbsp;|&nbsp;
-          E to scan current tile
+          Walk near species to discover them
         </p>
       </div>
     </div>
@@ -179,31 +184,96 @@ function showStartCard() {
 // Win / Lose cards
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Returns the CSS color and background for a run grade badge. */
+function _gradeBadgeStyle(grade) {
+  // S/A = gold  · B/C = green  · D = amber  · E/F = red
+  switch (grade) {
+    case 'S': return 'background:#f0c040;color:#1a1208;';
+    case 'A': return 'background:#f0a500;color:#1a1208;';
+    case 'B': return 'background:#1a9e6b;color:#fff;';
+    case 'C': return 'background:#2ecc71;color:#1a2a1a;';
+    case 'D': return 'background:#e67e22;color:#fff;';
+    case 'E': return 'background:#c0392b;color:#fff;';
+    case 'F': return 'background:#7b0e0e;color:#fff;';
+    default:  return 'background:#555;color:#fff;';
+  }
+}
+
 function showWinCard() {
-  const report = getFieldReportFragment(GameState);
+  const { grade, line } = computeRunGrade(GameState);
+  const report          = getFieldReportFragment(GameState);
+  const badgeStyle      = _gradeBadgeStyle(grade);
+  const currentSeed     = GameState.meta.seed;
   showOverlay(`
     <div class="panel card win-card" role="document">
       <h1 style="color:#1a9e6b;">✦ BIOME RESTORED ✦</h1>
       <p>The coastal wetland has reached <strong>Pristine</strong> health<br>
          and held stable for 3 consecutive days.</p>
+
+      <div style="display:flex;align-items:center;gap:14px;margin:14px 0 6px;">
+        <span style="
+          ${badgeStyle}
+          font-size:2.8em;font-weight:900;width:1.5em;height:1.5em;
+          display:flex;align-items:center;justify-content:center;
+          border-radius:10px;flex-shrink:0;line-height:1;
+          box-shadow:0 2px 10px rgba(0,0,0,0.45);
+        ">${grade}</span>
+        <span style="font-size:0.95em;opacity:0.9;font-style:italic;">${line}</span>
+      </div>
+
       <pre class="field-report">${report}</pre>
-      <button class="btn" data-action="newgame"
-        style="margin-top:16px;">Play Again</button>
+
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
+        <button class="btn" data-action="new-seed"
+          style="flex:1;min-width:130px;font-size:0.95em;">
+          New Seed →
+        </button>
+        <button class="btn" data-action="retry-seed" data-seed="${currentSeed}"
+          style="flex:1;min-width:130px;font-size:0.95em;background:transparent;
+                 border:1px solid var(--accent);color:var(--accent);">
+          Retry Seed ${currentSeed}
+        </button>
+      </div>
     </div>
   `);
 }
 
 function showLoseCard() {
-  const report = getFieldReportFragment(GameState);
+  const { grade, line } = computeRunGrade(GameState);
+  const report          = getFieldReportFragment(GameState);
+  const badgeStyle      = _gradeBadgeStyle(grade);
+  const currentSeed     = GameState.meta.seed;
   showOverlay(`
     <div class="panel card lose-card" role="document">
       <h1 style="color:#c0392b;">✖ COLLAPSE</h1>
       <p>${GameState.meta.collapse_timer <= 0
           ? 'The collapse timer expired. The biome is gone.'
           : 'A keystone species went extinct. The food web collapsed.'}</p>
+
+      <div style="display:flex;align-items:center;gap:14px;margin:14px 0 6px;">
+        <span style="
+          ${badgeStyle}
+          font-size:2.8em;font-weight:900;width:1.5em;height:1.5em;
+          display:flex;align-items:center;justify-content:center;
+          border-radius:10px;flex-shrink:0;line-height:1;
+          box-shadow:0 2px 10px rgba(0,0,0,0.45);
+        ">${grade}</span>
+        <span style="font-size:0.95em;opacity:0.9;font-style:italic;">${line}</span>
+      </div>
+
       <pre class="field-report">${report}</pre>
-      <button class="btn" data-action="newgame"
-        style="margin-top:16px;">Try Again</button>
+
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
+        <button class="btn" data-action="retry-seed" data-seed="${currentSeed}"
+          style="flex:1;min-width:130px;font-size:0.95em;">
+          Retry Seed ${currentSeed}
+        </button>
+        <button class="btn" data-action="new-seed"
+          style="flex:1;min-width:130px;font-size:0.95em;background:transparent;
+                 border:1px solid var(--accent);color:var(--accent);">
+          New Seed →
+        </button>
+      </div>
     </div>
   `);
 }
@@ -235,6 +305,7 @@ async function newGame(seed) {
     const biomes   = await loadBiomeTemplate();
     const template = biomes['coastal_wetland'];
     GameState.reset();
+    _proximityDiscovered.clear(); // reset session discovery tracker for new world
     generateWorld(template, seed, GameState);
 
     // Fix (2): compute true Day-1 health immediately after world generation
@@ -272,9 +343,9 @@ function startGame() {
 
   startRenderLoop();
 
-  // Show scan hint on first load
+  // Show proximity-discovery hint on first load
   if (GameState.notebook.discovered_nodes.length === 0) {
-    setTimeout(() => showToast('Click a tile or press E to scan species', 'info', 4000), 600);
+    setTimeout(() => showToast('Walk near species to discover them automatically!', 'info', 4000), 600);
   }
 }
 
@@ -283,29 +354,37 @@ function startGame() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 window.addEventListener('ecosystemx:scan', (e) => {
-  const { discovered, edgesRevealed, alreadyScanned, noCharges } = e.detail;
+  const { discovered, edgesRevealed, alreadyScanned } = e.detail;
 
-  if (noCharges) {
-    showToast('No scanner charges! Advance the day to continue.', 'warning');
-    return;
-  }
-  if (!discovered) {
-    showToast('No species on this tile.', 'info', 1800);
-    return;
-  }
-  if (alreadyScanned) {
-    const node = GameState.world.nodes[discovered];
-    showToast(`${node?.name ?? discovered} — already in notebook.`, 'info', 1800);
-    return;
-  }
+  // alreadyScanned fires if triggerScan is called on a node already in the notebook
+  // (shouldn't happen with the _proximityDiscovered guard, but safety net).
+  if (!discovered || alreadyScanned) return;
 
   const node = GameState.world.nodes[discovered];
-  const msg  = edgesRevealed > 0
-    ? `🔬 Scanned: ${node.name} (+${edgesRevealed} link${edgesRevealed > 1 ? 's' : ''} revealed!)`
-    : `🔬 Scanned: ${node.name}`;
-  showToast(msg, 'success');
 
-  // Check if win/lose triggered by this action
+  // ── B: Discovery juice ────────────────────────────────────────────────────
+  // 1. Scale-pop: tell renderer this node just became discovered
+  markNodeDiscovered(discovered);
+
+  // 2. Chime
+  playDiscoverChime();
+
+  // 3. Enriched toast: species name + first sentence from codex entry
+  const codexEntry = getAICodexEntry(discovered);
+  let toastMsg = `🔬 ${node.name}`;
+  if (edgesRevealed > 0) {
+    toastMsg += ` (+${edgesRevealed} link${edgesRevealed > 1 ? 's' : ''} revealed!)`;
+  }
+  if (codexEntry) {
+    // First sentence only (split on ". " or ".\n", keep it short in the toast)
+    const firstSentence = codexEntry.trim().split(/\.\s+/)[0].trim();
+    if (firstSentence.length > 0 && firstSentence.length <= 120) {
+      toastMsg += `\n${firstSentence}.`;
+    }
+  }
+  showToast(toastMsg, 'success', 3800);
+
+  // Check if win/lose triggered by this discovery
   checkEndCondition();
 });
 
@@ -341,6 +420,25 @@ overlay.addEventListener('click', async (e) => {
       await newGame(seed);
       break;
     }
+
+    // ── Win/lose card: brand-new run with a fresh seed ─────────────────────
+    case 'new-seed': {
+      _unlockAudio();
+      // UI input — Date.now() used ONLY to pick the seed, not in sim/generation
+      const freshSeed = Math.max(1, Date.now() % 999999 || 1);
+      await newGame(freshSeed);
+      break;
+    }
+
+    // ── Win/lose card: replay the exact same world ─────────────────────────
+    case 'retry-seed': {
+      _unlockAudio();
+      // seed stored in data-seed attribute, set when the card was rendered
+      const replaySeed = Math.max(1, parseInt(btn.dataset.seed || '1', 10));
+      await newGame(replaySeed);
+      break;
+    }
+
     case 'retry': {
       showStartCard();
       break;
@@ -371,6 +469,13 @@ overlay.addEventListener('click', async (e) => {
         showOverlay(buildVendorHTML(GameState));
         // Show result dialogue as a toast
         showToast(result.message.split('\n')[0], 'success', 4000);
+
+        // ── C: Intervention juice (bioremediation only) ────────────────
+        if (type === 'bioremediation') {
+          playInterveneChime();
+          // Ping the clean-burst effect on the player's current tile
+          pingCleanEffect(GameState.player.tile_x, GameState.player.tile_y);
+        }
       } else {
         showToast(result.message, 'warning');
       }
@@ -385,6 +490,7 @@ overlay.addEventListener('click', async (e) => {
         break;
       }
       const prevHealth = GameState.meta.ecosystem_health;
+      const prevTier   = GameState.meta.market_tier;
       hideOverlay();
 
       // Run simulation step (hysteria updateTier is called inside via stub;
@@ -394,10 +500,20 @@ overlay.addEventListener('click', async (e) => {
 
       const newDay    = GameState.meta.day_count;
       const newHealth = GameState.meta.ecosystem_health;
+      const newTier   = GameState.meta.market_tier;
       showDayResultBanner(prevHealth, newHealth, newDay);
 
       // Crossfade ambient audio to match new health tier
       setHealthAudio(newHealth);
+
+      // ── D: Tier-up juice ──────────────────────────────────────────────
+      // Fire when the market tier moved strictly UP (Toxic<Degraded<Recovering<Pristine)
+      const _TIER_ORDER = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
+      if ((_TIER_ORDER[newTier] ?? 0) > (_TIER_ORDER[prevTier] ?? 0)) {
+        playTierUp();
+        flashCanvas(300);
+        setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTier} → ${newTier}`, 'success', 3000), 120);
+      }
 
       // Win sting (fires once when win flag first becomes true)
       if (GameState.flags.win) playWinSting();
@@ -405,12 +521,11 @@ overlay.addEventListener('click', async (e) => {
       // Check for game-over conditions
       setTimeout(checkEndCondition, 400);
 
-      // Refresh scanner charges hint if depleted
+      // Recharge scanner each day (soft discovery counter reset)
       if (GameState.player.scanner_charges === 0) {
-        setTimeout(() => showToast('⚡ Scanner recharged! 5 new charges.', 'success', 2500), 800);
-        // Recharge scanner each day (quality of life)
         GameState.player.scanner_charges = 5;
         GameState.save();
+        setTimeout(() => showToast('⚡ Scanner recharged — 5 new scouting charges.', 'success', 2500), 800);
       }
       break;
     }
@@ -444,16 +559,25 @@ document.addEventListener('keydown', (e) => {
       if (overlay.hidden) {
         // Space = end day (quick play)
         if (!GameState.flags.win && !GameState.flags.lose) {
+          const _TIER_ORDER_SP = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
           const prevHealth = GameState.meta.ecosystem_health;
+          const prevTierSp = GameState.meta.market_tier;
           runDailyStep(GameState);
           updateTier(GameState);
+          const newTierSp = GameState.meta.market_tier;
           showDayResultBanner(prevHealth, GameState.meta.ecosystem_health, GameState.meta.day_count);
           setHealthAudio(GameState.meta.ecosystem_health);
+          // ── D: Tier-up juice (spacebar path) ──────────────────────────
+          if ((_TIER_ORDER_SP[newTierSp] ?? 0) > (_TIER_ORDER_SP[prevTierSp] ?? 0)) {
+            playTierUp();
+            flashCanvas(300);
+            setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTierSp} → ${newTierSp}`, 'success', 3000), 120);
+          }
           if (GameState.flags.win) playWinSting();
           if (GameState.player.scanner_charges === 0) {
             GameState.player.scanner_charges = 5;
             GameState.save();
-            setTimeout(() => showToast('⚡ Scanner recharged!', 'success', 2000), 500);
+            setTimeout(() => showToast('⚡ Scanner recharged — 5 new scouting charges.', 'success', 2000), 500);
           }
           setTimeout(checkEndCondition, 400);
         }
@@ -472,6 +596,46 @@ document.addEventListener('keydown', (e) => {
 
 let rafId      = null;
 let loopRunning = false;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Proximity discovery — tracks which nodes have been auto-discovered this
+// session so we never fire triggerScan twice for the same node.
+// Cleared on newGame (via GameState.reset()).
+// ─────────────────────────────────────────────────────────────────────────────
+const _proximityDiscovered = new Set();
+
+/**
+ * _checkProximityDiscovery(state)
+ *
+ * Called every frame from tick(). For every UNDISCOVERED non-stressor node
+ * within DISCOVER_RADIUS tiles (Chebyshev) of the player, fires triggerScan
+ * so the node gets marked discovered, pushed to the notebook, and its edges
+ * revealed.  The _proximityDiscovered Set guards against double-firing.
+ */
+function _checkProximityDiscovery(state) {
+  if (!state.world?.nodes || state.flags.win || state.flags.lose) return;
+  const px = state.player.tile_x;
+  const py = state.player.tile_y;
+
+  for (const node of Object.values(state.world.nodes)) {
+    if (node.kind === 'stressor') continue;          // stressor never auto-discovered
+    if (node.discovered) continue;                    // already in notebook
+    if (_proximityDiscovered.has(node.id)) continue; // already fired this session
+
+    // Resolve node tile coordinates
+    const tile = state.world.tiles[node.tileId];
+    let ntx, nty;
+    if (tile && tile.x !== undefined) { ntx = tile.x; nty = tile.y; }
+    else { const p = node.tileId.split('_'); ntx = +p[1]; nty = +p[2]; }
+
+    const dist = Math.max(Math.abs(ntx - px), Math.abs(nty - py));
+    if (dist > DISCOVER_RADIUS) continue;
+
+    // Mark as fired BEFORE triggerScan so re-entrant calls can't double-fire
+    _proximityDiscovered.add(node.id);
+    triggerScan(ntx, nty, state);
+  }
+}
 
 function startRenderLoop() {
   if (loopRunning) return;
@@ -494,6 +658,13 @@ function startRenderLoop() {
         offsetY: HUD_H,
       };
     }
+
+    // ── Hold-to-walk: step player if a direction key is held ─────────────────
+    tickMovement(GameState);
+
+    // ── Proximity-based species discovery ────────────────────────────────────
+    _checkProximityDiscovery(GameState);
+
     render(GameState, ctx, timestamp);
     rafId = requestAnimationFrame(tick);
   }

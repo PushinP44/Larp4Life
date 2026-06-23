@@ -4,38 +4,8 @@
     {
       "name": "ecox",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8128"],
-      "port": 8128
-    },
-    {
-      "name": "ecox2",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8129"],
-      "port": 8129
-    },
-    {
-      "name": "ecox3",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8130"],
-      "port": 8130
-    },
-    {
-      "name": "ecox4",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8131"],
-      "port": 8131
-    },
-    {
-      "name": "ecox5",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8132"],
-      "port": 8132
-    },
-    {
-      "name": "ecox6",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8133"],
-      "port": 8133
+      "runtimeArgs": ["-m", "http.server", "8151"],
+      "port": 8151
     }
   ]
 }

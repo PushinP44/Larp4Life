@@ -23,20 +23,25 @@ No separate screens. No DOM canvas swaps. Environmental change = tile re-tint, n
 Use requestAnimationFrame from main.js; render is pure (reads state, draws, mutates nothing).
 ```
 
-## Skill Prompt — input + scanning (paste into CodeBuddy)
+## Skill Prompt — input + WALK-TO-DISCOVER (paste into CodeBuddy)
 ```
-Implement input.js for Ecosystem X.
+Implement input.js for Ecosystem X. Discovery is PROXIMITY-BASED (walk to find species), NOT clicking.
 
-- Arrow/WASD: move the agent one tile (bounds-checked). Movement does NOT advance the sim.
-- Scan (key S or click adjacent entity): if scanner_charges>0 and an undiscovered node is on/
-  adjacent to the agent's tile, mark node.discovered=true, push to notebook.discovered_nodes,
-  decrement charges. Observing a predator while its prey is also discovered REVEALS that edge
-  (call revealEdge) — this is the deductive mechanic.
-- Intervention: open a small radial/contextual choice ON the map tile (not a new screen);
-  selecting one calls the vendor purchase + ecosystem.js apply function for that tile.
-- End Day (key E): calls ecosystem.js runDailyStep(state).
+- Arrow/WASD (or click/tap a tile): move the agent one tile (bounds-checked). Movement does NOT
+  advance the sim. On each move, set player.facing ('down'|'left'|'right'|'up') for the avatar sprite row.
+- NO scan key, NO click-to-scan. Discovery happens automatically by walking (see renderer/main below).
+- Intervention: vendor panel buttons act on the agent's CURRENT tile (bioremediation etc.).
+- End Day: Space / button → ecosystem.js runDailyStep(state).
 
-All writes go through ecosystem.js / vendor.js mutators. input.js never mutates state directly.
+Proximity discovery (renderer.js exports TERRITORY_RADIUS=3, DISCOVER_RADIUS=1.4; Chebyshev tiles):
+- renderer.js drawNodes: an undiscovered non-stressor node is HIDDEN beyond TERRITORY_RADIUS; within
+  it, draw a faded "ghost" + a prominent bouncing "!" badge above it.
+- main.js game loop: each frame, any undiscovered non-stressor node within DISCOVER_RADIUS of the
+  agent is auto-discovered (reuse scanTile/triggerScan) → notebook + edge reveal (deductive web).
+- scanner_charges is a SOFT counter: decrement on discovery, never block.
+
+All state writes go through dedicated mutators (scanTile/movePlayer set facing then save()). The
+renderer stays read-only. The avatar uses assets/images/player.png (4 cols × 4 rows: down/left/right/up).
 ```
 
 ## Overlay panels (allowed DOM, over the canvas)

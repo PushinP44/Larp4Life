@@ -126,10 +126,7 @@ export function buildNotebookHTML(state) {
   const scanCount   = discoveredNodes.filter(n => n.kind !== 'stressor').length;
   const totalNodes  = Object.values(state.world.nodes).filter(n => n.kind !== 'stressor').length;
   const edgeCount   = state.notebook.revealed_edges.length;
-  const totalEdges  = state.world.edges.filter(e => {
-    const f = state.world.nodes[e.from];
-    return f?.kind !== 'stressor' || true; // count all edges
-  }).length;
+  const totalEdges  = state.world.edges.length;          // all trophic links (including stressor edges)
 
   return `
     <div class="panel nb-panel" role="document" aria-label="Field Notebook">

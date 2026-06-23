@@ -19,7 +19,8 @@
     "name": "Field Agent",
     "resources": 100,                 // spent on interventions
     "tile_x": 4, "tile_y": 6,         // position on the grid
-    "scanner_charges": 5
+    "facing": "down",                 // 'down'|'left'|'right'|'up' — set by input.js on each move (avatar sprite row)
+    "scanner_charges": 5              // SOFT counter only — decremented on discovery, never blocks (proximity discovery)
   },
   "world": {
     "grid": { "w": 16, "h": 12 },

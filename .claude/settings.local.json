@@ -19,7 +19,14 @@
       "Bash(mkdir -p ai-prompts/miora-output assets/images assets/audio)",
       "Bash(mv assets/*preview*.png ai-prompts/miora-output/)",
       "Bash(mv assets/*.png assets/images/)",
-      "Bash(mv assets/*.mp3 assets/audio/)"
+      "Bash(mv assets/*.mp3 assets/audio/)",
+      "Bash(python3 -c \"import PIL; print\\('Pillow', PIL.__version__\\)\")",
+      "Read(//System/Library/Fonts/Supplemental/**)",
+      "Bash(python3 tools/gen_keyart.py)",
+      "Bash(sips -g pixelWidth -g pixelHeight assets/images/keyart.png)",
+      "Bash(python3 tools/gen_player.py)",
+      "Bash(sips -g pixelWidth -g pixelHeight -g hasAlpha assets/images/player.png)",
+      "Bash(node --check input.js)"
     ]
   }
 }

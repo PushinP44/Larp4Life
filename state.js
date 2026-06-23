@@ -34,7 +34,8 @@ function makeDefaultState() {
       resources: 100,
       tile_x: 4,
       tile_y: 6,
-      scanner_charges: 5
+      scanner_charges: 5,
+      facing: 'down'          // 'down'|'left'|'right'|'up' — updated by input.js on every move
     },
     world: {
       grid: { w: 16, h: 12 },
