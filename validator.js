@@ -6,10 +6,12 @@
  *
  * Checks:
  *   1. ACYCLIC  — Kahn's topological sort must consume all nodes.
- *   2. SOLVABLE — greedy auto-player simulation: bioremediate the highest-L
- *                 biological-node tile each day (cost 80, L−40) and run
- *                 runDailyStep for up to collapse_timer days. Win iff H≥75
- *                 sustained 3 days with no keystone extinct.
+ *   2. SOLVABLE — greedy auto-player simulation: DIAGNOSE activeStressors
+ *                 and apply the MATCHING counter each day when affordable:
+ *                   • runoff:      bioremediate the highest-L tile (source priority)
+ *                   • invasive:    cull the invasive node
+ *                   • overharvest: protect the harvested species' tile
+ *                 Win iff H≥75 sustained 3 days with no keystone extinct.
  *
  * Export: validateWorld(world) → { ok: boolean, reason: string }
  *
@@ -18,19 +20,22 @@
 
 import { runDailyStep } from './ecosystem.js';
 
+// Balance knobs — must mirror ecosystem.js / balance-harness.js
+const BIOREMEDIATION_COST = 60;
+const BIOREM_L_REDUCTION  = 50;
+const CULL_COST           = 55;   // matches rebalancing slot price (balance pass: 90→55)
+const PROTECT_COST        = 150;  // matches stabilization slot price
+const PROTECT_CAP         = 20;
+const START_RESOURCES     = 100;
+const COLLAPSE_TIMER      = 40;
+
 /**
  * validateWorld(world) → { ok, reason }
- *
- * @param {object} world  — the plain world object produced by generator.js
- *                          (fields: nodes, edges, tiles, grid, actionsThisStep)
- * @returns {{ ok: boolean, reason: string }}
  */
 export function validateWorld(world) {
-  // ── Step 1: Acyclicity via Kahn's algorithm ───────────────────────────────
   const acyclic = checkAcyclic(world);
   if (!acyclic.ok) return acyclic;
 
-  // ── Step 2: Solvability via greedy auto-player ───────────────────────────
   const solvable = checkSolvable(world);
   if (!solvable.ok) return solvable;
 
@@ -41,22 +46,12 @@ export function validateWorld(world) {
 // Kahn's topological sort
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * checkAcyclic(world) → { ok, reason }
- *
- * Runs Kahn's algorithm on the node/edge graph.
- * Node keys are sorted before processing for stable cross-engine behaviour
- * (dag-generation skill flag: "Object-key iteration order assumed stable
- *  across engines → sort keys before generating").
- */
 function checkAcyclic(world) {
-  // Sorted node id list — deterministic across all engines.
   const nodeIds = Object.keys(world.nodes).sort();
   const edges   = world.edges;
 
-  // Build adjacency and in-degree maps.
-  const inDegree = {};     // nodeId → count of incoming edges
-  const outgoing = {};     // nodeId → [nodeId, ...]
+  const inDegree = {};
+  const outgoing = {};
 
   for (const id of nodeIds) {
     inDegree[id] = 0;
@@ -64,8 +59,6 @@ function checkAcyclic(world) {
   }
 
   for (const e of edges) {
-    // Guard: skip edges referencing nodes not in the current world
-    // (defensive; should never happen with a well-formed template).
     if (!(e.from in inDegree) || !(e.to in inDegree)) {
       return {
         ok: false,
@@ -76,22 +69,16 @@ function checkAcyclic(world) {
     inDegree[e.to]++;
   }
 
-  // Queue: all nodes with in-degree 0 (sorted for determinism).
   const queue   = nodeIds.filter(id => inDegree[id] === 0).sort();
   let processed = 0;
 
   while (queue.length > 0) {
-    // Shift from front (BFS order — stable given sorted initial queue).
     const current = queue.shift();
     processed++;
-
-    // Reduce in-degree for all successors; enqueue if it reaches 0.
-    // Sort successors before pushing so queue remains deterministically ordered.
     const successors = [...outgoing[current]].sort();
     for (const next of successors) {
       inDegree[next]--;
       if (inDegree[next] === 0) {
-        // Insert in sorted position (small N, insertion sort is fine).
         let i = 0;
         while (i < queue.length && queue[i] < next) i++;
         queue.splice(i, 0, next);
@@ -111,42 +98,35 @@ function checkAcyclic(world) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Solvability — greedy auto-player simulation
+// Solvability — typed greedy auto-player
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * checkSolvable(world) → { ok, reason }
  *
- * Deep-clones `world` into a lightweight mock state and runs a greedy
- * auto-player for up to collapse_timer days. Each simulated day the greedy
- * player:
- *   1. Finds the tile with the highest stressor L among ALL node tiles
- *      (including the stressor-source tile — its L drives stressorLoadPenalty
- *      in computeHealth, so the player must be allowed to remediate it).
- *   2. If resources ≥ 120 (bioremediation cost), applies it: L = max(0, L − 40).
- *   3. Calls runDailyStep(mockState) — byte-identical to real gameplay.
+ * Diagnoses the active stressors and applies the MATCHING counter each day.
+ * Trying the wrong tool (e.g. bioremediate on an invasive world) still works
+ * mechanically but the correct path is always prioritised by the greedy player.
  *
- * Win: H ≥ 75 sustained for 3 consecutive days AND no keystone extinct.
- * Lose / unsolvable: timer expires or keystone goes extinct before win.
+ * Strategy per stressor type (per §4 spec):
+ *   runoff:      bioremediate the highest-L tile (ALL tiles; source first if tied)
+ *   invasive:    cull the invasive node when resources ≥ CULL_COST
+ *   overharvest: protect the harvested species' tile when resources ≥ PROTECT_COST
+ *                (after protecting, spend remainder on bioremediation to reduce L penalty)
  *
- * Never mutates the original world.
- *
- * @param {object} world
- * @returns {{ ok: boolean, reason: string }}
+ * When 2 stressors are active the greedy player addresses BOTH each day.
  */
 function checkSolvable(world) {
-  // ── Build a mock state from a deep clone of world ─────────────────────────
-  const BIOREMEDIATION_COST = 80;   // balance pass: mirrors state.js base_prices.bioremediation
-  const BIOREMEDIATION_L_REDUCTION = 40;
-  const START_RESOURCES = 100;
-  const COLLAPSE_TIMER  = 30;
+  // Match generator.js: invasive worlds get +10 days on the collapse timer.
+  const hasInvasiveStressor = (world.activeStressors ?? []).some(s => s.type === 'invasive');
+  const effectiveTimer = COLLAPSE_TIMER + (hasInvasiveStressor ? 30 : 0);
 
   const mockState = {
     meta: {
       seed:             0,
       biome_template:   'validation',
       day_count:        1,
-      collapse_timer:   COLLAPSE_TIMER,
+      collapse_timer:   effectiveTimer,
       health_streak:    0,
       ecosystem_health: 50,
       market_tier:      'Degraded'
@@ -157,32 +137,76 @@ function checkSolvable(world) {
       tile_y:          0,
       scanner_charges: 5
     },
-    world:    JSON.parse(JSON.stringify(world)), // deep clone — never mutate original
+    world:    JSON.parse(JSON.stringify(world)),
     notebook: { discovered_nodes: [], revealed_edges: [] },
     vendor: {
-      base_prices:  { bioremediation: BIOREMEDIATION_COST, rebalancing: 90, stabilization: 150 }, // BIOREMEDIATION_COST=80
+      base_prices:  {
+        bioremediation: BIOREMEDIATION_COST,
+        rebalancing:    CULL_COST,
+        stabilization:  PROTECT_COST
+      },
       price_factor: 1.0,
       available:    ['bioremediation', 'rebalancing', 'stabilization']
     },
     flags: { win: false, lose: false },
-    // No-op save / resetDay (greedy sim is pure in-memory; no localStorage needed)
     save()     { /* no-op */ },
     resetDay() { this.world.actionsThisStep = {}; }
   };
 
-  const maxDays = COLLAPSE_TIMER;
+  const activeStressors = world.activeStressors ?? [];
+  const hasRunoff      = activeStressors.some(s => s.type === 'runoff');
+  const invasiveDef    = activeStressors.find(s => s.type === 'invasive');
+  const harvestDef     = activeStressors.find(s => s.type === 'overharvest');
+
+  const maxDays = effectiveTimer;
 
   for (let day = 0; day < maxDays; day++) {
-    // ── Greedy intervention: bioremediate the highest-L tile (ALL nodes) ─────
-    // The stressor-source tile drives stressorLoadPenalty in computeHealth, so
-    // including it lets the auto-player actually remove that penalty and reach
-    // H≥75. Excluding it causes valid seeds to be wrongly rejected (over-reject).
+    const res = mockState.player.resources;
+
+    // ── 1. Overharvest: protect the target tile first (highest priority — stops drain) ─
+    if (harvestDef && res >= PROTECT_COST) {
+      const targetNode = mockState.world.nodes[harvestDef.targetNative];
+      if (targetNode) {
+        const tile = mockState.world.tiles[targetNode.tileId];
+        if (tile && !tile.protected) {
+          tile.protected = true;
+          tile.stressor  = Math.min(tile.stressor ?? 0, PROTECT_CAP);
+          mockState.player.resources -= PROTECT_COST;
+        }
+      }
+    }
+
+    // ── 2. Invasive: cull the invasive node ────────────────────────────────────
+    if (invasiveDef && mockState.player.resources >= CULL_COST) {
+      const inv = mockState.world.nodes[invasiveDef.nodeId];
+      if (inv && inv.status !== 'extinct' && inv.population > 0) {
+        const removal = Math.ceil(inv.population * 0.45);
+        inv.population = Math.max(0, inv.population - removal);
+        mockState.player.resources -= CULL_COST;
+      }
+    }
+
+    // ── 3. Runoff: bioremediate the highest-L tile (source-tile priority) ──────
+    //     Also run this as a fallback even in invasive/overharvest worlds to reduce
+    //     the stressor-load penalty from the n_runoff tile.
     if (mockState.player.resources >= BIOREMEDIATION_COST) {
       let bestTileId = null;
       let bestL      = -Infinity;
 
+      // Prioritise source tiles from runoff stressor definitions
+      if (hasRunoff) {
+        for (const s of activeStressors) {
+          if (s.type !== 'runoff') continue;
+          const tile = mockState.world.tiles[s.sourceTileId];
+          if (tile && tile.stressor > bestL) {
+            bestL      = tile.stressor;
+            bestTileId = s.sourceTileId;
+          }
+        }
+      }
+
+      // Fallback: highest-L tile among ALL node tiles
       for (const n of Object.values(mockState.world.nodes)) {
-        // Include ALL node tiles — biological AND stressor source.
         const tile = mockState.world.tiles[n.tileId];
         if (tile && tile.stressor > bestL) {
           bestL      = tile.stressor;
@@ -193,21 +217,38 @@ function checkSolvable(world) {
       if (bestTileId !== null && bestL > 0) {
         mockState.world.tiles[bestTileId].stressor = Math.max(
           0,
-          mockState.world.tiles[bestTileId].stressor - BIOREMEDIATION_L_REDUCTION
+          mockState.world.tiles[bestTileId].stressor - BIOREM_L_REDUCTION
         );
         mockState.player.resources -= BIOREMEDIATION_COST;
       }
     }
 
-    // ── Daily sim tick (byte-identical to real gameplay) ─────────────────────
+    // ── 4. Reintroduce crashed natives (rebalancing slot, ¤CULL_COST) ─────────
+    // Models the vendor's rebalancing→reintroduction path. Boosts a native that
+    // has been devastated (P < 15% K_max) and whose tile is now relatively clean.
+    if (mockState.player.resources >= CULL_COST) {
+      const bioNodes = Object.values(mockState.world.nodes)
+        .filter(n => n.kind !== 'stressor' && n.kind !== 'invasive' && n.status !== 'extinct')
+        .sort((a, b) => (a.population / a.K_max) - (b.population / b.K_max));
+      const reintroTarget = bioNodes.find(n => {
+        const tileL = mockState.world.tiles[n.tileId]?.stressor ?? 100;
+        return n.K_max > 0 && n.population < 0.15 * n.K_max && tileL < 40;
+      });
+      if (reintroTarget) {
+        reintroTarget.population = Math.round(0.20 * reintroTarget.K_max);
+        reintroTarget.extinction_counter = 0;
+        if (reintroTarget.status !== 'stable') reintroTarget.status = 'stable';
+        mockState.player.resources -= CULL_COST;
+      }
+    }
+
+    // ── Daily sim tick ─────────────────────────────────────────────────────────
     runDailyStep(mockState);
 
-    // ── Win / lose check ──────────────────────────────────────────────────────
     if (mockState.flags.win) {
       return { ok: true, reason: `solvable: greedy auto-player won on day ${mockState.meta.day_count}` };
     }
     if (mockState.flags.lose) {
-      // Distinguish the lose reason for better debug output.
       const anyExtinct = Object.values(mockState.world.nodes)
         .some(n => n.keystone && n.status === 'extinct');
       const reason = anyExtinct
@@ -217,7 +258,6 @@ function checkSolvable(world) {
     }
   }
 
-  // Timer exhausted without win or detected lose — treat as unsolvable.
   return {
     ok: false,
     reason: `unsolvable: greedy auto-player did not reach win within ${maxDays} days ` +
@@ -233,7 +273,6 @@ function checkSolvable(world) {
 ───────────────────────────────────────────────────────────────────────────── */
 
 export function runValidatorTests() {
-  // Helper: build a minimal world from node id list + edge list.
   function makeWorld(nodeIds, edgePairs) {
     const nodes = {};
     for (const id of nodeIds) {
@@ -243,138 +282,90 @@ export function runValidatorTests() {
     }
     const edges = edgePairs.map(([from, to]) => ({ from, to, beta: 0.03, revealed: false }));
     const tiles = { 't_0_0': { id:'t_0_0', x:0, y:0, type:'marsh', stressor:10, protected:false } };
-    return { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{} };
+    return { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors:[] };
   }
 
   // ── Test 1: simple chain → acyclic ──────────────────────────────────────
-  const chainWorld = makeWorld(
-    ['n_a', 'n_b', 'n_c'],
-    [['n_a','n_b'], ['n_b','n_c']]
-  );
-  const r1 = validateWorld(chainWorld);
-  console.assert(r1.ok,
-    `VALIDATOR FAIL: simple chain should be acyclic; got: ${r1.reason}`);
+  const r1 = validateWorld(makeWorld(['n_a','n_b','n_c'],[['n_a','n_b'],['n_b','n_c']]));
+  console.assert(r1.ok, `VALIDATOR FAIL: simple chain; got: ${r1.reason}`);
 
   // ── Test 2: direct cycle → detected ──────────────────────────────────────
-  const cycleWorld = makeWorld(
-    ['n_x', 'n_y'],
-    [['n_x','n_y'], ['n_y','n_x']]
-  );
-  const r2 = validateWorld(cycleWorld);
-  console.assert(!r2.ok,
-    'VALIDATOR FAIL: direct cycle should fail acyclicity');
-  console.assert(r2.reason.includes('cycle'),
-    `VALIDATOR FAIL: reason should mention "cycle"; got: ${r2.reason}`);
+  const r2 = validateWorld(makeWorld(['n_x','n_y'],[['n_x','n_y'],['n_y','n_x']]));
+  console.assert(!r2.ok, 'VALIDATOR FAIL: direct cycle should fail');
+  console.assert(r2.reason.includes('cycle'), `VALIDATOR FAIL: reason should mention cycle; got: ${r2.reason}`);
 
   // ── Test 3: self-loop → detected ─────────────────────────────────────────
-  const selfWorld = makeWorld(['n_s'], [['n_s','n_s']]);
-  const r3 = validateWorld(selfWorld);
-  console.assert(!r3.ok,
-    'VALIDATOR FAIL: self-loop should fail acyclicity');
+  console.assert(!validateWorld(makeWorld(['n_s'],[['n_s','n_s']])).ok, 'VALIDATOR FAIL: self-loop');
 
-  // ── Test 4: 3-node cycle (A→B→C→A) → detected ────────────────────────────
-  const threeWorld = makeWorld(
-    ['n_1','n_2','n_3'],
-    [['n_1','n_2'],['n_2','n_3'],['n_3','n_1']]
-  );
-  const r4 = validateWorld(threeWorld);
-  console.assert(!r4.ok,
-    'VALIDATOR FAIL: 3-node cycle should fail acyclicity');
+  // ── Test 4: 3-node cycle → detected ─────────────────────────────────────
+  console.assert(!validateWorld(makeWorld(['n_1','n_2','n_3'],[['n_1','n_2'],['n_2','n_3'],['n_3','n_1']])).ok,
+    'VALIDATOR FAIL: 3-node cycle');
 
   // ── Test 5: disconnected graph → acyclic ─────────────────────────────────
-  const disconnWorld = makeWorld(['n_p','n_q','n_r'], []);
-  const r5 = validateWorld(disconnWorld);
-  console.assert(r5.ok,
-    `VALIDATOR FAIL: disconnected acyclic graph should pass; got: ${r5.reason}`);
+  console.assert(validateWorld(makeWorld(['n_p','n_q','n_r'],[])).ok,
+    'VALIDATOR FAIL: disconnected acyclic should pass');
 
   // ── Test 6: single node → acyclic ────────────────────────────────────────
-  const singleWorld = makeWorld(['n_only'], []);
-  const r6 = validateWorld(singleWorld);
-  console.assert(r6.ok,
-    `VALIDATOR FAIL: single node should be acyclic; got: ${r6.reason}`);
+  console.assert(validateWorld(makeWorld(['n_only'],[])).ok, 'VALIDATOR FAIL: single node');
 
-  // ── Test 7: DAG with diamond shape → acyclic ─────────────────────────────
-  // A → B, A → C, B → D, C → D
-  const diamondWorld = makeWorld(
+  // ── Test 7: diamond DAG → acyclic ────────────────────────────────────────
+  console.assert(validateWorld(makeWorld(
     ['n_A','n_B','n_C','n_D'],
     [['n_A','n_B'],['n_A','n_C'],['n_B','n_D'],['n_C','n_D']]
-  );
-  const r7 = validateWorld(diamondWorld);
-  console.assert(r7.ok,
-    `VALIDATOR FAIL: diamond DAG should be acyclic; got: ${r7.reason}`);
+  )).ok, 'VALIDATOR FAIL: diamond DAG');
 
-  // ── Test 8: coastal_wetland topology (n_runoff→n_seagrass→n_shrimp→n_heron)
-  const cwWorld = makeWorld(
+  // ── Test 8: coastal_wetland topology → acyclic ───────────────────────────
+  console.assert(validateWorld(makeWorld(
     ['n_runoff','n_seagrass','n_shrimp','n_heron'],
     [['n_runoff','n_seagrass'],['n_seagrass','n_shrimp'],['n_shrimp','n_heron']]
-  );
-  const r8 = validateWorld(cwWorld);
-  console.assert(r8.ok,
-    `VALIDATOR FAIL: coastal_wetland chain should be acyclic; got: ${r8.reason}`);
+  )).ok, 'VALIDATOR FAIL: coastal_wetland chain');
 
   // ── Test 9: edge to unknown node → fails gracefully ──────────────────────
-  const badEdgeWorld = makeWorld(['n_a','n_b'], [['n_a','n_z']]);
-  const r9 = validateWorld(badEdgeWorld);
-  console.assert(!r9.ok,
-    'VALIDATOR FAIL: edge to unknown node should fail');
+  console.assert(!validateWorld(makeWorld(['n_a','n_b'],[['n_a','n_z']])).ok,
+    'VALIDATOR FAIL: unknown node edge');
 
-  // ── Test 10: topological order is deterministic across calls ─────────────
-  // Two identical worlds should produce identical ok/reason.
+  // ── Test 10: identical worlds → identical results ────────────────────────
   const w10a = makeWorld(['n_a','n_b','n_c'],[['n_a','n_b'],['n_b','n_c']]);
   const w10b = makeWorld(['n_a','n_b','n_c'],[['n_a','n_b'],['n_b','n_c']]);
-  const r10a = validateWorld(w10a);
-  const r10b = validateWorld(w10b);
+  const r10a = validateWorld(w10a), r10b = validateWorld(w10b);
   console.assert(r10a.ok === r10b.ok && r10a.reason === r10b.reason,
-    'VALIDATOR FAIL: identical worlds produced different validation results');
+    'VALIDATOR FAIL: identical worlds produced different results');
 
   // ── Test 11: clearly-winnable coastal_wetland world → solvable ───────────
-  // Hand-built world: low stressor (L=5), populations at ~80 % of K_max,
-  // full chain n_runoff(stressor)→n_seagrass→n_shrimp→n_heron.
-  // The greedy auto-player should reach H≥75 within 30 days.
   {
-    const winnableNodes = {
-      n_runoff: {
-        id:'n_runoff',  kind:'stressor', keystone:false,
-        tileId:'t_runoff', population:0, r:0, K_max:0, alpha:0, weight:0,
-        status:'stable', extinction_counter:0
-      },
-      n_seagrass: {
-        id:'n_seagrass', kind:'producer', keystone:true,
-        tileId:'t_seagrass', population:400, r:0.15, K_max:500, alpha:0.85, weight:2.5,
-        status:'stable', extinction_counter:0
-      },
-      n_shrimp: {
-        id:'n_shrimp', kind:'consumer', keystone:false,
-        tileId:'t_shrimp', population:260, r:0.13, K_max:325, alpha:1.5, weight:1.25,
-        status:'stable', extinction_counter:0
-      },
-      n_heron: {
-        id:'n_heron', kind:'predator', keystone:true,
-        tileId:'t_heron', population:72, r:0.07, K_max:90, alpha:2.3, weight:3.5,
-        status:'stable', extinction_counter:0
-      }
-    };
-    const winnableTiles = {
-      t_runoff:   { id:'t_runoff',   stressor:5,  protected:false },
-      t_seagrass: { id:'t_seagrass', stressor:5,  protected:false },
-      t_shrimp:   { id:'t_shrimp',   stressor:5,  protected:false },
-      t_heron:    { id:'t_heron',    stressor:5,  protected:false }
-    };
-    const winnableEdges = [
-      { from:'n_runoff',   to:'n_seagrass', beta:0,     revealed:false },
-      { from:'n_seagrass', to:'n_shrimp',   beta:0.035, revealed:false },
-      { from:'n_shrimp',   to:'n_heron',    beta:0.045, revealed:false }
-    ];
     const winnableWorld = {
       grid:{w:16,h:12},
-      tiles: winnableTiles,
-      nodes: winnableNodes,
-      edges: winnableEdges,
-      actionsThisStep: {}
+      tiles: {
+        t_runoff:   { id:'t_runoff',   stressor:5,  protected:false },
+        t_seagrass: { id:'t_seagrass', stressor:5,  protected:false },
+        t_shrimp:   { id:'t_shrimp',   stressor:5,  protected:false },
+        t_heron:    { id:'t_heron',    stressor:5,  protected:false }
+      },
+      nodes: {
+        n_runoff:  { id:'n_runoff',  kind:'stressor',  keystone:false, tileId:'t_runoff',
+                     population:0,   r:0,    K_max:0,   alpha:0, weight:0,
+                     status:'stable', extinction_counter:0 },
+        n_seagrass:{ id:'n_seagrass',kind:'producer',  keystone:true,  tileId:'t_seagrass',
+                     population:400, r:0.15, K_max:500, alpha:0.85, weight:2.5,
+                     status:'stable', extinction_counter:0 },
+        n_shrimp:  { id:'n_shrimp',  kind:'consumer',  keystone:false, tileId:'t_shrimp',
+                     population:260, r:0.13, K_max:325, alpha:1.5, weight:1.25,
+                     status:'stable', extinction_counter:0 },
+        n_heron:   { id:'n_heron',   kind:'predator',  keystone:true,  tileId:'t_heron',
+                     population:72,  r:0.07, K_max:90,  alpha:2.3, weight:3.5,
+                     status:'stable', extinction_counter:0 }
+      },
+      edges: [
+        { from:'n_runoff',   to:'n_seagrass', beta:0,     revealed:false },
+        { from:'n_seagrass', to:'n_shrimp',   beta:0.035, revealed:false },
+        { from:'n_shrimp',   to:'n_heron',    beta:0.045, revealed:false }
+      ],
+      actionsThisStep: {},
+      activeStressors: [{ type:'runoff', sourceTileId:'t_runoff', spreadRate:4, sourceL:5 }]
     };
     const r11 = validateWorld(winnableWorld);
     console.assert(r11.ok,
-      `VALIDATOR FAIL T11: clearly-winnable coastal_wetland world should be solvable; got: ${r11.reason}`);
+      `VALIDATOR FAIL T11: clearly-winnable world should be solvable; got: ${r11.reason}`);
   }
 
   console.log('[validator.js] All self-tests passed ✓');

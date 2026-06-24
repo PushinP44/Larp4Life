@@ -123,8 +123,9 @@ Stability guard: MAX_DELTA_FRAC = 0.35
 Food model:  FOOD_SUFFICIENCY (θ) = 0.4 · STARVE_RATE = 0.3
 Health penalty: stressorLoadPenalty coefficient = 0.10  (was 0.15 pre-re-tune, 0.25 pre-balance)
 Market price ×:  Toxic 1.8 · Degraded 1.3 · Recovering 1.0 · Pristine 0.8
-Interventions (base): Bioremediation 60 (−50 L, player tile) · Rebalancing 90 · Stabilization 150
-Economy: Start resources 100 · DAILY_INCOME 55/day · Scanner charges 5
+Interventions (base): Bioremediation 60 (−50 L, player tile) · Rebalancing 55 (cull 45%) · Stabilization 150
+Economy: Start resources 100 · DAILY_INCOME 60/day · Scanner charges 5
+Invasive timer bonus: +30 days (invasive worlds get collapse_timer 70 instead of 40)
 Generation: start.stressor [40,60] · start.populationFrac [0.35,0.55] · collapse_timer 40
 Verified: 1000-seed sweep  win-rate 100%  first-seed-valid 78.1%  median days-to-win 23  p10/p90 19/26  deterministic.
 ```

@@ -1,26 +1,36 @@
 # Game Demo Video — Shot List & Script (≤3 min)
+### Ecosystem X: The Last Balance · current build (v2 — avatar, walk-to-discover, juice, grade, intro)
 
-Submission item (PDF §5). Aim for **2:30–2:50**. Show the full loop AND the AI modules — judges score
-both. Record at the final balanced build. Capture clean gameplay first, narrate over it.
+Record the screen (QuickTime ⌘⇧5 or OBS) at the **frozen final build**. Capture clean gameplay first, then
+narrate over it. Target **2:30–2:50**. Show the **full loop AND the five AI modules** — judges score both.
+A storyboard of reference frames for each beat accompanies this script (see the screenshots I captured).
 
-> Note: the strict "<3 min" cap is the rule for the *project-diagnosis* slots; for the final submission
-> the video just must be "complete." Keep it ≤3 min anyway — tight reads as polished.
+> Tip: the strict "<3 min" cap is the rule for the *project-diagnosis* slot; the final submission video just
+> needs to be "complete." Keep it ≤3 min anyway — tight reads as polished.
 
 | Time | On screen | Voiceover / caption |
 |---|---|---|
-| 0:00–0:12 | Key art → title; one line of the problem | "Biodiversity collapse is invisible — until the whole web unravels. Ecosystem X makes it visible." |
-| 0:12–0:30 | Start card showing the **seed**; agent spawns in a degraded (brown, desaturated) wetland | "Every run is procedurally generated from a shareable seed — and guaranteed winnable." |
-| 0:30–0:55 | Walk, **scan** a species → Field Notebook fills → scanning a predator while prey is known **reveals a dependency edge** (pulse animation) | "You scan organisms to uncover the hidden food web — the dependency graph." |
-| 0:55–1:15 | Player makes a **wrong** move (cull the wrong node) → **visible secondary cascade**, a keystone drops, tiles redden, audio darkens | "Pull the wrong thread and the cascade is immediate — and audible." |
-| 1:15–1:40 | Open **vendor** in Toxic tier (prices ×1.8, panicked dialogue line) | "Ecological collapse hits the village economy — Market Hysteria raises prices exactly when you can least afford it." |
-| 1:40–2:05 | **Bioremediate** the root stressor → L drops → seagrass recovers → reintroduce keystone → tiles recolor green, audio brightens (VoxFlow crossfade) | "Fix the root cause, not the symptom. Watch the biome — and the soundtrack — come back to life." |
-| 2:05–2:20 | Health crosses to **Pristine**, win card → the **AI Field Report** debrief (personalized) | "An AI Field Report recaps what *you* learned from *your* decisions." |
-| 2:20–2:38 | (If built) open **Ask the Field Ecologist**, type a question, show the live answer + badge | "Stuck? Ask the in-world AI ecologist — live when online, with an offline fallback." |
-| 2:38–2:50 | Montage: CodeBuddy chat log, Miora art sheet, VoxFlow tiers, EdgeOne WAF dashboard | "Built end-to-end with CodeBuddy and Tencent Cloud AI: worldbuilding, art, audio, security." |
-| 2:50–2:55 | Live URL + hashtags | "Play it now. #CodeBuddy #TencentCloudHackathon" |
+| 0:00–0:12 | **Intro cutscene** over the key-art cover (gold title, the healthy↔collapsing split) → panel 1 "A coastal wetland is collapsing." | "Biodiversity collapse is invisible — until the whole web unravels. Ecosystem X makes it visible." |
+| 0:12–0:24 | Click through intro panels 2–4 (network → how-to → goal), then the seed/start card → **Begin** | "You're a field agent restoring a dying wetland — and every species is a node in a hidden food web." |
+| 0:24–0:42 | The **degraded biome** (muted, brown), the **adventurer avatar** walking (hold a key / click-to-walk) | "Walk the wetland to investigate. Wildlife is hidden — until you get close." |
+| 0:42–0:58 | Walk into a species' territory → a **gold "!" badge** pops → step closer → **discovery** (chime + pop + toast) | "A marker means a species is near. Find it, and its place in the food web is revealed." |
+| 0:58–1:14 | Keep discovering → **dashed food-web edges** light up runoff→seagrass→shrimp→stork | "Scan the web. Pull one thread and the whole thing unravels — pollution starves the chain upward." |
+| 1:14–1:30 | Stand on a polluted tile (the **`L` readout** shows high), open the vendor, **bioremediate** → **green clean-burst** + chime; tile `L` drops | "Fix the root cause, not the symptom — bioremediate the source of the runoff." |
+| 1:30–1:55 | Advance days: the **whole biome greens up** (sick brown → lush), audio brightens, a **tier-up flash**, the vendor's prices/mood lift (Market Hysteria) | "Restore the balance and watch the wetland — and its soundtrack and economy — come back to life." |
+| 1:55–2:12 | Health crosses **Pristine** → **WIN card**: big **grade badge (e.g. B)** + flavour line + the AI **Field Report** | "An AI Field Report grades how *you* restored it — and recaps what you learned." |
+| 2:12–2:24 | Click **New Seed →** → a brand-new world generates instantly | "Every run is a different, always-winnable world. Beat your grade." |
+| 2:24–2:42 | **Montage** (quick cuts): CodeBuddy chat log · Genie JSON (codex/dialogue/report) · the key art + tiles · a VoxFlow waveform · the EdgeOne WAF dashboard | "Built end-to-end with CodeBuddy and Tencent Cloud AI — worldbuilding, art, audio, and security." |
+| 2:42–2:50 | Live URL + hashtags on the key art | "Play it now. #CodeBuddy #TencentCloudHackathon" |
 
 ## Capture checklist
-- [ ] 1080p, 60fps if the canvas allows; record audio from the game (the crossfade is a selling point).
-- [ ] Show the seed on the start card (proves the procedural+deterministic claim).
-- [ ] Get one clean cascade and one clean recovery — the before/after recolor is the money shot.
-- [ ] Optional: run the final cut through **Tencent Cloud MPS / Game Scene Enhancement** (super-res/color) — that itself is the Game Video Enhancement AI sub-module.
+- [ ] 1080p, 60fps if possible — record the **game audio** too (the tier crossfade + chimes are a selling point)
+- [ ] Use a **focused browser tab** (movement cadence + animations run at full 60fps; the preview throttles)
+- [ ] Show the **seed** on the start card (proves the procedural + deterministic claim)
+- [ ] Get one clean **degraded → pristine** recovery — the before/after green-up is the money shot
+- [ ] Show one **"!" discovery** and one **clean-burst** intervention up close
+- [ ] End on the **grade card + New Seed** (the replay hook judges remember)
+- [ ] Optional: run the final cut through **Tencent Cloud MPS / Game Scene Enhancement** (super-res / color) — that itself is the Game-Video-Enhancement AI sub-module
+
+## Beat → reference frame
+Use the storyboard screenshots as the visual target for each row above: intro cover · degraded biome + avatar ·
+"!" discovery · revealed food web · clean-burst intervention · pristine recovery · win card + grade.

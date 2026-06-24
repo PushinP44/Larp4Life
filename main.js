@@ -99,7 +99,14 @@ async function bootstrap() {
                    Object.keys(GameState.world.nodes || {}).length > 0;
 
   if (!hasWorld) {
-    showStartCard();
+    // Show intro sequence only on the very first load of this session.
+    // New Seed / Retry flows bypass bootstrap() entirely (they call newGame directly),
+    // so _introShown is never reset by those paths — matching Rule 03.
+    if (_introShown) {
+      showStartCard();
+    } else {
+      showIntroSequence();
+    }
   } else {
     startGame();
   }
@@ -118,6 +125,74 @@ function hideOverlay() {
   overlay.hidden = true;
   overlay.innerHTML = '';
   canvas.focus();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intro sequence — 4 narrative panels, keyart backdrop, shown once per session
+// Rule 01: fully offline; no live LLM. Rule 03: module-level flag, no state mut.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** True after the intro has been seen or skipped in this browser session. */
+let _introShown = false;
+
+const _INTRO_PANELS = [
+  {
+    counter: '1 / 4',
+    text: `A coastal wetland is <strong>collapsing</strong>.<br>
+           Algae chokes the seagrass, the fish vanish,<br>
+           the storks abandon their nests.`,
+  },
+  {
+    counter: '2 / 4',
+    text: `Nature is a <strong>network</strong> — every species a node<br>
+           in a hidden food web.<br>
+           Pull one thread and the whole web unravels.`,
+  },
+  {
+    counter: '3 / 4',
+    text: `You are a <strong>Field Agent</strong>.<br>
+           Walk the wetland (<strong>WASD / arrows</strong>, or click) to find species —<br>
+           a <strong>❗</strong> marks one nearby. Discovering them reveals the food web.`,
+  },
+  {
+    counter: '4 / 4',
+    text: `Trace the web to the <strong>ROOT pollution source</strong>.<br>
+           Bioremediate the right tiles to restore<br>
+           Ecosystem Health to <strong>Pristine</strong> — before the collapse timer hits zero.`,
+    isFinal: true,
+  },
+];
+
+/**
+ * _introPanelHTML(index) — builds the HTML for one intro panel.
+ * CSS classes only (no inline styles except --keyart-url CSS variable).
+ */
+function _introPanelHTML(index) {
+  const panel     = _INTRO_PANELS[index];
+  const nextLabel = panel.isFinal ? 'Begin →' : 'Next →';
+  return `
+    <div class="intro-panel" style="--keyart-url: url('assets/images/keyart.png')">
+      <div class="intro-content">
+        <div class="intro-counter">${panel.counter}</div>
+        <p class="intro-text">${panel.text}</p>
+        <div class="intro-btn-row">
+          <button class="intro-skip" data-action="intro-skip">Skip</button>
+          <button class="intro-next" data-action="intro-next"
+                  data-panel="${index}">${nextLabel}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * showIntroSequence() — renders P1 into #overlay.
+ * Subsequent panels advance via the overlay event-delegation (data-action="intro-next").
+ * Skipping or completing the sequence calls showStartCard().
+ */
+function showIntroSequence() {
+  _introShown = true;
+  showOverlay(_introPanelHTML(0));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -149,31 +224,22 @@ function showToast(message, type = 'info', durationMs = 2800) {
 function showStartCard() {
   const defaultSeed = Math.floor(Date.now() % 9999) + 1;
   showOverlay(`
-    <div class="panel card" role="document">
-      <h1>Ecosystem X</h1>
-      <h2 style="font-size:1em;opacity:0.7;margin-top:-10px;">The Last Balance</h2>
-      <p>A coastal wetland is collapsing.<br>
-         Scan species, reveal the food web,<br>
-         find the stressor — restore the balance.</p>
-      <div class="start-controls">
-        <p style="opacity:0.6;font-size:0.85em;margin-bottom:4px;">
-          Seed: <input id="seed-input" type="number" min="1" max="999999"
-                 value="${defaultSeed}"
-                 style="width:80px;background:#1a2530;border:1px solid #f0a500;
-                        color:#f5f0e8;padding:2px 6px;font-family:monospace;
-                        border-radius:3px;">
-          &nbsp;<span style="opacity:0.5">(same seed = same world)</span>
-        </p>
-        <button class="btn" data-action="newgame"
-          style="font-size:1em;padding:10px 28px;margin-top:8px;">
+    <div class="start-card-outer" style="--keyart-url: url('assets/images/keyart.png')"
+         role="document">
+      <div class="start-card-inner">
+        <div class="start-seed-row">
+          <label for="seed-input">Seed</label>
+          <input id="seed-input" type="number" min="1" max="999999"
+                 value="${defaultSeed}">
+          <span class="seed-hint">(same seed = same world)</span>
+        </div>
+        <button class="start-begin-btn" data-action="newgame">
           Begin Field Assignment
         </button>
-      </div>
-      <div class="start-hints">
-        <p style="opacity:0.5;font-size:0.8em;margin-top:16px;">
-          🖱 Click a tile to move &nbsp;|&nbsp;
-          ⌨ Arrow keys / WASD to move &nbsp;|&nbsp;
-          Walk near species to discover them
+        <p class="start-controls-hint">
+          🖱 Click tile to move &nbsp;·&nbsp;
+          ⌨ WASD / arrows &nbsp;·&nbsp;
+          Walk near species to discover
         </p>
       </div>
     </div>
@@ -410,6 +476,24 @@ overlay.addEventListener('click', async (e) => {
   if (!action) return;
 
   switch (action) {
+
+    // ── Intro sequence navigation ─────────────────────────────────────────
+    case 'intro-next': {
+      const currentPanel = parseInt(btn.dataset.panel ?? '0', 10);
+      const nextIndex    = currentPanel + 1;
+      if (nextIndex < _INTRO_PANELS.length) {
+        showOverlay(_introPanelHTML(nextIndex));
+      } else {
+        // Last panel "Begin →" → go to start card
+        showStartCard();
+      }
+      break;
+    }
+
+    case 'intro-skip': {
+      showStartCard();
+      break;
+    }
 
     // ── Start / Retry ─────────────────────────────────────────────────────
     case 'newgame': {

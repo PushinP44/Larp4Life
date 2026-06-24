@@ -118,7 +118,8 @@ function stepPopulation(nodeId, state) {
 H = 100 × ( Σ_i w_i · clamp(P_i / K_i(L_pristine), 0, 1) ) / Σ_i w_i  −  stressorLoadPenalty
 ```
 - `w_i` node weight; keystones weigh more. `K_i(L_pristine)` uses L=0. Stressor nodes have weight 0 (excluded from the sum).
-- `stressorLoadPenalty` = **0.15** × mean stressor L over the stressor-source tiles (post-balance value; was 0.25). This is a balance knob — the harness is the source of truth.
+- `stressorLoadPenalty` = **0.10** × mean stressor L over the stressor-source tiles (re-tuned from 0.15). This is a balance knob — the harness is the source of truth.
+- Phase 2 adds typed-stressor penalties to H; see §F.
 - Clamp `H` to 0–100.
 
 **Tiers:** Toxic `<25` · Degraded `25–50` · Recovering `50–75` · Pristine `≥75` (drives Rule on Hysteria, audio, tile retint).
@@ -137,11 +138,71 @@ Counter at `state.world.nodes[nodeId].extinction_counter` (0–3). One warning d
 
 ---
 
-## F. Intervention effects on stressors
-- **Bioremediation** — `L_new = max(0, L_old − 40)` on the targeted tile.
-- **Habitat Stabilization** — raises that tile's effective `K_max` weight (declares a protected zone); persists.
-- **Population Rebalancing** — reintroduce a native node (`+seed population`, requires its tile `L < 20`) OR cull an invasive (`A_i` spike for one step).
-- Stressors **never** decrease passively — only player action reduces `L`. All writes clamp `L` to `[0,100]`.
+## F. Typed stressors — instantiation, effects, and matched counters
+
+Each world has 1 (≈60%) or 2 (≈40%) stressor types selected at generation time via `stressorPool` in `biomes.json`. Descriptors are stored in `state.world.activeStressors[]`.
+
+### Daily pre-step order (runDailyStep, before Eq2)
+
+`processStressors(state)` runs **before** the population step so symptoms cascade into the same day's simulation:
+
+| Type | Pre-step effect | Symptom |
+|------|----------------|---------|
+| **runoff** | If source tile L ≥ 10: each orthogonal neighbour gets +`spreadRate` L (clamp 0–100). Cleaning the source tile to L < 10 stops propagation. | High & spreading tile L; `n_runoff` stressor node |
+| **overharvest** | Subtract `harvestDrain` from the target species' population (floor 0), **unless** its tile is `protected`. | Species declining under low L with no rising predator; `node.harvestPressure` flag |
+| **invasive** | *No pre-step* — the invasive's edge to its target native is handled by the normal Eq2 predation loop. | `n_invasive` node whose population **rises** while its target native **falls**, under low L |
+
+### Matched counter-interventions
+
+| Stressor | Correct counter | Effect | Cost |
+|----------|----------------|--------|------|
+| runoff | `applyBioremediation(tileId)` | L -= BIOREM_AMOUNT (=50), clamp 0. Root fix: clean source tile to L<10. | ¤60 |
+| invasive | `applyCull(nodeId)` | population -= ceil(CULL_FRAC × P). CULL_FRAC = 0.45. | ¤55 |
+| overharvest | `applyProtect(tileId)` | tile.protected = true; L capped at PROTECT_CAP (=20); harvest drain zeroed. | ¤150 |
+
+**Wrong-counter rule:** mismatched tools still spend resources but have no useful effect (applying bioremediation in an invasive world reduces L but not the invasive — resources wasted). This is intentional — the mechanic teaches diagnosis.
+
+### Balance knobs (harness-verified, 1000-seed sweep — balance pass 2)
+```
+RUNOFF_SPREAD = 4       BIOREM_AMOUNT = 50
+HARVEST_DRAIN = 6*      CULL_FRAC     = 0.45     (* drainBand now [3,6], was [4,9])
+PROTECT_CAP   = 20      DAILY_INCOME  = 60        (was 55)
+
+Rebalancing (cull) cost: ¤55  (was ¤90 → ¤70 → ¤55)
+Bioremediation cost:     ¤60  (unchanged)
+Stabilization cost:      ¤150 (unchanged)
+
+Invasive collapse-timer bonus: +30 days on top of base 40
+  → invasive-only worlds: timer = 70
+  → invasive+runoff worlds: timer = 70
+  → invasive+overharvest worlds: timer = 70
+  → non-invasive worlds: timer = 40 (unchanged)
+
+Invasive parameter bands (biomes.json stressorPool):
+  r: [0.07, 0.12]   K_max: [120, 200]   alpha: [0.7, 1.0]
+  betaBand: [0.008, 0.018]   populationFrac: [0.15, 0.25]
+
+Native tile stressor in invasive worlds: L ∈ [lo×0.4, lo×0.7]
+  (lower initial stressor so K_eff stays meaningful while player culls)
+```
+
+### Updated full daily-step order (ecosystem.js → runDailyStep)
+```
+PRE-0. processStressors()    — runoff spread, overharvest drain
+a.     stepPopulation (Eq2)  — Jacobi simultaneous update, all non-stressor non-extinct nodes
+b.     checkExtinction        — per node
+c.     computeHealth (Eq3)   → state.meta.ecosystem_health
+d.     updateMarketTier
+e.     day_count += 1; collapse_timer -= 1
+f.     player.resources += DAILY_INCOME
+g.     evaluateWinLose
+h.     state.resetDay(); state.save()
+```
+
+### computeHealth additions (Phase 2)
+- **Invasive penalty**: `+5 × clamp(P_invasive / K_max_invasive, 0, 1)` subtracted from H while the invasive is alive.
+- **Overharvest penalty**: `+3 × (harvestDrain / K_max_target) × 100` subtracted from H while the target tile is **not** protected.
+- Invasive nodes (`kind = 'invasive'`) are **excluded** from the weighted population sum (weight = 0).
 
 ---
 

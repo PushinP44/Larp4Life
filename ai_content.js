@@ -60,6 +60,8 @@ const _SPRITE_NAMES = [
   // decorative props (scatter layer)
   'prop_tree', 'prop_bush', 'prop_reeds', 'prop_rock',
   'prop_flowers', 'prop_lilypad', 'prop_stump', 'prop_grass',
+  // cover key art (used by intro sequence + start card)
+  'keyart',
 ];
 
 /**

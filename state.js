@@ -51,7 +51,7 @@ function makeDefaultState() {
     vendor: {
       base_prices: {
         bioremediation: 60,   // difficulty re-tune: 80→60 so player can act more frequently
-        rebalancing: 90,
+        rebalancing: 55,      // balance pass: 90→70→55 so daily culling is sustainable
         stabilization: 150
       },
       price_factor: 1.3,              // set by Market Hysteria tier

@@ -8,6 +8,17 @@
  *   Rule 02-E  checkExtinction
  *   Rule 02-D  evaluateWinLose
  *
+ * Typed stressor pre-step (Phase 2):
+ *   Before the population step, runDailyStep processes state.world.activeStressors:
+ *     • runoff:      propagate L to orthogonal neighbours (if source L ≥ 10)
+ *     • overharvest: subtract harvestDrain from target population (unless protected)
+ *     • invasive:    no pre-step (handled by normal Eq2 edges)
+ *
+ * Intervention mutators (Rule 03: validate → mutate → clamp → save):
+ *   applyBioremediation(tileId, state)   — L -= BIOREM_AMOUNT (clamp 0)
+ *   applyCull(nodeId, state)             — population -= CULL_FRAC × P
+ *   applyProtect(tileId, state)          — tile.protected=true, L ≤ PROTECT_CAP
+ *
  * Rule 01 / Law 2: NO Math.random() here — all randomness flows through prng.js.
  * Rule 03: every mutating path ends with state.save().
  */
@@ -18,7 +29,14 @@
 const FOOD_SUFFICIENCY = 0.4;   // θ — food at ≥θ of pristine capacity fully sustains consumer
 const STARVE_RATE      = 0.3;   // fraction of population lost per day when food→0
 const MAX_DELTA_FRAC   = 0.35;  // ±35 % stability clamp on daily population change
-const DAILY_INCOME     = 55;    // resources credited each day (economy knob; raised 40→55 per difficulty re-tune for humane margin)
+const DAILY_INCOME     = 60;    // resources credited each day (balance pass: 55→60)
+
+// ── Typed-stressor knobs ──────────────────────────────────────────────────────
+export const RUNOFF_SPREAD   = 4;    // L added to each orthogonal neighbour per day
+export const HARVEST_DRAIN   = 6;    // default daily population drain (overharvest)
+export const CULL_FRAC       = 0.45; // fraction of invasive population removed per cull (balance pass: 0.30→0.40→0.45)
+export const PROTECT_CAP     = 20;   // max stressor on a protected tile
+export const BIOREM_AMOUNT   = 50;   // L reduction per bioremediation application
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Eq1 — Dynamic carrying capacity
@@ -30,15 +48,12 @@ const DAILY_INCOME     = 55;    // resources credited each day (economy knob; ra
  * K_i(L) = K_max_i × (1 − L/100) ^ alpha_i
  * L = the stressor level on the node's own tile.
  * Returns a float — do NOT round here; rounding happens only in stepPopulation.
- *
- * @param {string} nodeId
- * @param {object} state  — GameState (or mock with same shape)
  */
 export function getCarryingCapacity(nodeId, state) {
   const n = state.world.nodes[nodeId];
   const L = state.world.tiles[n.tileId].stressor; // float 0–100
   const K = n.K_max * Math.pow(Math.max(0, 1 - L / 100), n.alpha);
-  return K; // float; caller rounds if needed
+  return K;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,32 +63,9 @@ export function getCarryingCapacity(nodeId, state) {
 /**
  * stepPopulation(nodeId, state[, popSnapshot]) → integer (new population)
  *
- * Implements Rule 02-C verbatim:
- *   growth     = K>0 ? r·P·(1 − P/K) : −P
- *   foodFactor = hasFood ? clamp(mean_j(P_j/K_max_j) / θ, 0, 1) : 1
- *   starvation = STARVE_RATE · P · (1 − foodFactor)
- *   predation  = Σ_k β_ik · min(P_k, P)     [edges i→k, k non-stressor]
- *   delta      = clamp(growth − starvation − predation − action, −0.35·P, +0.35·P)
- *   P_next     = max(0, round(P + delta))
- *
- * Edge direction reminder:
- *   j → nodeId  means nodeId EATS j  (j is food/prey  — contributes to foodFactor)
- *   nodeId → k  means k EATS nodeId  (k is a predator — contributes to predation)
- * Stressor edges (e.from is a stressor node) are SKIPPED in both loops.
- *
- * Jacobi / simultaneous-update support:
- *   When `popSnapshot` is provided (a plain object { nodeId: population }),
- *   the foodFactor and predation loops read neighbour populations from the
- *   snapshot (beginning-of-step values) rather than live node values. This
- *   makes the full daily step independent of node insertion order.
- *   The stepped node still writes its own live population as usual.
- *   Standalone calls without the snapshot continue to work (Gauss-Seidel,
- *   live reads) so all existing tests remain valid.
- *
- * @param {string} nodeId
- * @param {object} state
- * @param {Object<string,number>} [popSnapshot]  optional Jacobi snapshot
- * @returns {number} new population (integer ≥ 0)
+ * Implements Rule 02-C verbatim.
+ * Invasive nodes are treated exactly like biological nodes for this step
+ * (their suppression effect on native prey is carried through the edge β).
  */
 export function stepPopulation(nodeId, state, popSnapshot) {
   const n = state.world.nodes[nodeId];
@@ -89,7 +81,7 @@ export function stepPopulation(nodeId, state, popSnapshot) {
     popSnapshot !== undefined ? (popSnapshot[id] ?? 0) : state.world.nodes[id].population;
 
   // ── Growth — logistic on own-tile carrying capacity ───────────────────────
-  const growth = K > 0 ? n.r * P * (1 - P / K) : -P; // collapse if K → 0
+  const growth = K > 0 ? n.r * P * (1 - P / K) : -P;
 
   // ── Bottom-up food dependency (j → nodeId edges, j non-stressor) ──────────
   let foodSum   = 0;
@@ -97,13 +89,12 @@ export function stepPopulation(nodeId, state, popSnapshot) {
   for (const e of state.world.edges) {
     if (e.to !== nodeId) continue;
     const j = state.world.nodes[e.from];
-    if (!j || j.kind === 'stressor') continue; // stressor edge is NOT food
-    // Use snapshot population; K_max_j is structural (doesn't change mid-step).
+    if (!j || j.kind === 'stressor') continue;
     foodSum += j.K_max > 0 ? snapPop(e.from) / j.K_max : 0;
     foodCount++;
   }
   const foodFactor = foodCount === 0
-    ? 1 // no food edges → producer / light-limited → always full food
+    ? 1
     : Math.max(0, Math.min(1, (foodSum / foodCount) / FOOD_SUFFICIENCY));
 
   const starvation = STARVE_RATE * P * (1 - foodFactor);
@@ -113,7 +104,7 @@ export function stepPopulation(nodeId, state, popSnapshot) {
   for (const e of state.world.edges) {
     if (e.from !== nodeId) continue;
     const k = state.world.nodes[e.to];
-    if (!k || k.kind === 'stressor') continue; // stressor edge is NOT predation
+    if (!k || k.kind === 'stressor') continue;
     predation += e.beta * Math.min(snapPop(e.to), P);
   }
 
@@ -125,7 +116,6 @@ export function stepPopulation(nodeId, state, popSnapshot) {
   const cap = MAX_DELTA_FRAC * P;
   delta = Math.max(-cap, Math.min(cap, delta));
 
-  // Write back — integer organisms, floor at 0.
   n.population = Math.max(0, Math.round(P + delta));
   return n.population;
 }
@@ -136,26 +126,20 @@ export function stepPopulation(nodeId, state, popSnapshot) {
 
 /**
  * checkExtinction(nodeId, state)
- *
  * P == 0 for 3 consecutive days → status = 'extinct' (permanent).
- * P  > 0 → reset extinction_counter to 0.
- * Stressor nodes are skipped.
- *
- * @param {string} nodeId
- * @param {object} state
  */
 export function checkExtinction(nodeId, state) {
   const n = state.world.nodes[nodeId];
-  if (n.kind === 'stressor') return;          // stressors have no extinction logic
-  if (n.status === 'extinct') return;         // already permanent — nothing to do
+  if (n.kind === 'stressor') return;
+  if (n.status === 'extinct') return;
 
   if (n.population === 0) {
     n.extinction_counter = (n.extinction_counter ?? 0) + 1;
     if (n.extinction_counter >= 3) {
-      n.status = 'extinct'; // permanent — cannot be revived
+      n.status = 'extinct';
     }
   } else {
-    n.extinction_counter = 0; // living → reset
+    n.extinction_counter = 0;
   }
 }
 
@@ -167,23 +151,17 @@ export function checkExtinction(nodeId, state) {
  * computeHealth(state) → float [0,100]
  *
  * H = 100 · (Σ w_i · clamp(P_i / K_i(L=0), 0, 1)) / Σ w_i  −  stressorLoadPenalty
- *
- * K_i(L=0) is K_max_i (pristine capacity — L=0 means no pollution).
- * stressorLoadPenalty = 0.15 × mean stressor L across all stressor-source tiles.
- * Stressor nodes: weight treated as 0 (excluded from the population sum).
- * Result clamped to [0, 100].
- *
- * @param {object} state
- * @returns {number} health 0–100
+ * Invasive nodes (weight=0) do not contribute to the health score.
  */
 export function computeHealth(state) {
   let weightedSum  = 0;
   let totalWeight  = 0;
 
   for (const n of Object.values(state.world.nodes)) {
-    if (n.kind === 'stressor') continue; // stressor nodes don't count
+    // Exclude stressor nodes AND invasive nodes (weight=0 already handles invasive,
+    // but skip explicitly so they can never inflate the score either)
+    if (n.kind === 'stressor' || n.kind === 'invasive') continue;
     const w = n.weight ?? 1;
-    // K at L=0 is just K_max (Eq1 with L=0 → (1-0)^alpha = 1)
     const K_pristine = n.K_max;
     const relAbund   = K_pristine > 0
       ? Math.max(0, Math.min(1, n.population / K_pristine))
@@ -194,7 +172,8 @@ export function computeHealth(state) {
 
   const populationScore = totalWeight > 0 ? 100 * (weightedSum / totalWeight) : 0;
 
-  // stressorLoadPenalty = 0.15 × mean stressor L of all stressor-source tiles
+  // stressorLoadPenalty = 0.10 × mean stressor L across all stressor-source tiles
+  // (only the n_runoff-type stressor node's tile contributes — not invasive tiles)
   const stressorTiles = Object.values(state.world.nodes)
     .filter(n => n.kind === 'stressor')
     .map(n => state.world.tiles[n.tileId]?.stressor ?? 0);
@@ -202,9 +181,37 @@ export function computeHealth(state) {
   const meanStressor = stressorTiles.length > 0
     ? stressorTiles.reduce((a, b) => a + b, 0) / stressorTiles.length
     : 0;
-  const stressorLoadPenalty = 0.10 * meanStressor; // difficulty re-tune: 0.15→0.10 (runoff L=60 subtracts 6 not 9)
+  const stressorLoadPenalty = 0.10 * meanStressor;
 
-  return Math.max(0, Math.min(100, populationScore - stressorLoadPenalty));
+  // Additional penalty for active invasive: scale by its relative population
+  let invasivePenalty = 0;
+  for (const s of (state.world.activeStressors ?? [])) {
+    if (s.type === 'invasive') {
+      const inv = state.world.nodes[s.nodeId];
+      if (inv && inv.status !== 'extinct' && inv.K_max > 0) {
+        invasivePenalty += 2 * Math.min(1, inv.population / inv.K_max);
+      }
+    }
+  }
+
+  // Overharvest: adds a fixed small penalty proportional to drain / target K_max
+  let harvestPenalty = 0;
+  for (const s of (state.world.activeStressors ?? [])) {
+    if (s.type === 'overharvest') {
+      const target = state.world.nodes[s.targetNative];
+      if (target && target.K_max > 0) {
+        const drain = s.harvestDrain ?? HARVEST_DRAIN;
+        const tile  = state.world.tiles[target.tileId];
+        if (!tile?.protected) {
+          harvestPenalty += 3 * (drain / target.K_max) * 100;
+        }
+      }
+    }
+  }
+
+  return Math.max(0, Math.min(100,
+    populationScore - stressorLoadPenalty - invasivePenalty - harvestPenalty
+  ));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,14 +223,10 @@ export function computeHealth(state) {
  *
  * Win: health_streak ≥ 3 AND no keystone is extinct.
  * Lose: collapse_timer ≤ 0 OR any keystone is extinct.
- * Once a flag is set it is permanent (no toggling back).
- *
- * @param {object} state
  */
 export function evaluateWinLose(state) {
   const H = state.meta.ecosystem_health;
 
-  // Maintain health streak: increment if H ≥ 75, reset otherwise.
   if (H >= 75) {
     state.meta.health_streak = (state.meta.health_streak ?? 0) + 1;
   } else {
@@ -234,36 +237,21 @@ export function evaluateWinLose(state) {
     .filter(n => n.keystone === true);
   const anyKeystoneExtinct = keystoneNodes.some(n => n.status === 'extinct');
 
-  // Fix (2): correct precedence per Rule 02-D:
-  //   1. Keystone extinct → LOSE (always overrides everything, even a simultaneous win streak)
-  //   2. Streak ≥ 3 AND no keystone extinct → WIN (even if collapse_timer just hit 0 on this tick)
-  //   3. Timer ≤ 0 → LOSE (only if win not achieved)
-  // This prevents the bug where H≥75 streak=3 on the final tick is scored as a loss.
-
   if (!state.flags.lose && !state.flags.win) {
     if (anyKeystoneExtinct) {
-      // Priority 1: keystone extinction — unrecoverable loss
       state.flags.lose = true;
     } else if (state.meta.health_streak >= 3) {
-      // Priority 2: win streak achieved while all keystones alive → WIN
-      // (timer may be 0 on this same tick — win still counts)
       state.flags.win = true;
     } else if (state.meta.collapse_timer <= 0) {
-      // Priority 3: time ran out without win or keystone extinction
       state.flags.lose = true;
     }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Market tier helper (inline — hysteria.js owns full price/dialogue in P8)
+// Market tier helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * tierForHealth(H) → string
- * TODO (P8): hysteria.js will own the full price-factor & dialogue swap;
- *            this function is the authoritative tier lookup — import it there.
- */
 export function tierForHealth(H) {
   if (H < 25)  return 'Toxic';
   if (H < 50)  return 'Degraded';
@@ -272,30 +260,173 @@ export function tierForHealth(H) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// runDailyStep(state) — master tick (ecosystem-step skill order-of-ops)
+// Typed-stressor pre-step processing
+// Called at the START of runDailyStep, before the population step.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * processStressors(state)
+ *
+ * Processes state.world.activeStressors before the population simulation:
+ *
+ *   runoff:      If the source tile's L ≥ 10, add RUNOFF_SPREAD to each
+ *                orthogonal (N/E/S/W) neighbour tile's stressor, clamped [0,100].
+ *                (Cleaning the source tile to L<10 stops propagation — root fix.)
+ *
+ *   overharvest: Subtract harvestDrain from the target species' population
+ *                (floor 0), UNLESS that species' tile is protected.
+ *                (Uses stressor.harvestDrain or the global HARVEST_DRAIN knob.)
+ *
+ *   invasive:    No pre-step needed — the invasive node's edge to its target
+ *                is handled by the normal Eq2 predation loop each day.
+ *
+ * Does NOT call state.save() — runDailyStep owns the save at the end of
+ * the full tick (Rule 03).
+ */
+function processStressors(state) {
+  const { tiles, nodes, grid } = state.world;
+  const { w, h } = grid;
+
+  for (const s of (state.world.activeStressors ?? [])) {
+
+    if (s.type === 'runoff') {
+      const sourceTile = tiles[s.sourceTileId];
+      if (!sourceTile) continue;
+      const sourceL = sourceTile.stressor ?? 0;
+      if (sourceL < 10) continue; // source cleaned — propagation stopped
+
+      const spread = s.spreadRate ?? RUNOFF_SPREAD;
+
+      // Parse tile coordinates from tileId "t_X_Y"
+      const parts = s.sourceTileId.replace('t_', '').split('_').map(Number);
+      const sx = parts[0];
+      const sy = parts[1];
+
+      // Orthogonal neighbours
+      const neighbours = [
+        [sx,     sy - 1],
+        [sx,     sy + 1],
+        [sx - 1, sy    ],
+        [sx + 1, sy    ]
+      ];
+      for (const [nx, ny] of neighbours) {
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const nTileId = `t_${nx}_${ny}`;
+        const nTile   = tiles[nTileId];
+        if (!nTile) continue;
+        nTile.stressor = Math.max(0, Math.min(100, (nTile.stressor ?? 0) + spread));
+      }
+
+    } else if (s.type === 'overharvest') {
+      const targetNode = nodes[s.targetNative];
+      if (!targetNode || targetNode.status === 'extinct') continue;
+
+      const targetTile = tiles[targetNode.tileId];
+      if (targetTile?.protected) continue; // protect() zeroes the drain
+
+      const drain = s.harvestDrain ?? HARVEST_DRAIN;
+      targetNode.population = Math.max(0, targetNode.population - drain);
+      // Note: no stability clamp here — this is an external removal BEFORE Eq2,
+      // modelling continuous extraction. The Eq2 clamp operates on the remaining pop.
+
+    }
+    // invasive: handled by Eq2 edge — nothing to do here.
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intervention mutators (Rule 03: validate → mutate → clamp → save)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * applyBioremediation(tileId, state) → { ok, message }
+ *
+ * Counter for 'runoff' stressor.
+ * Reduces stressor L on `tileId` by BIOREM_AMOUNT (clamp 0).
+ * If L drops below 10 on the SOURCE tile, propagation stops.
+ *
+ * WRONG counter note: if called on a non-runoff world the resources are still
+ * spent and L is reduced (but there's no runoff propagation to stop, so it
+ * has little effect). This is the intended wrong-tool penalty.
+ *
+ * NOTE: vendor.js's applyIntervention('bioremediation') already handles the
+ * player-facing version (on the player's current tile). This function is the
+ * pure mutator used by the harness / auto-player.
+ */
+export function applyBioremediation(tileId, state) {
+  const tile = state.world.tiles[tileId];
+  if (!tile) return { ok: false, message: `No tile: ${tileId}` };
+  const before = tile.stressor ?? 0;
+  tile.stressor = Math.max(0, before - BIOREM_AMOUNT);
+  state.save();
+  return { ok: true, message: `Bioremediation: ${tileId} L ${Math.round(before)} → ${Math.round(tile.stressor)}` };
+}
+
+/**
+ * applyCull(nodeId, state) → { ok, message }
+ *
+ * Counter for 'invasive' stressor.
+ * One-step population spike: removes CULL_FRAC × current population from nodeId.
+ * Repeat applications drive the invasive down.
+ *
+ * Wrong-counter note: if called on a native node, it still removes CULL_FRAC
+ * of that native's population — a painful wrong-tool penalty with no benefit.
+ */
+export function applyCull(nodeId, state) {
+  const n = state.world.nodes[nodeId];
+  if (!n) return { ok: false, message: `No node: ${nodeId}` };
+  if (n.status === 'extinct') return { ok: false, message: `${nodeId} already extinct.` };
+  const before = n.population;
+  const removal = Math.ceil(before * CULL_FRAC);
+  n.population = Math.max(0, before - removal);
+  state.save();
+  return { ok: true, message: `Cull ${nodeId}: ${before} → ${n.population} (−${removal})` };
+}
+
+/**
+ * applyProtect(tileId, state) → { ok, message }
+ *
+ * Counter for 'overharvest' stressor.
+ * Sets tile.protected = true, which zeroes the harvest drain for species on
+ * that tile. Also caps the tile's L at PROTECT_CAP (matches vendor.js stabilization).
+ *
+ * Wrong-counter note: protects the tile from harvest drain, but if the stressor
+ * is runoff the tile protection does nothing about L propagation from the source.
+ */
+export function applyProtect(tileId, state) {
+  const tile = state.world.tiles[tileId];
+  if (!tile) return { ok: false, message: `No tile: ${tileId}` };
+  if (tile.protected) return { ok: false, message: `${tileId} already protected.` };
+  tile.protected = true;
+  tile.stressor  = Math.min(tile.stressor ?? 0, PROTECT_CAP);
+  state.save();
+  return { ok: true, message: `Protected tile ${tileId} (L capped at ${PROTECT_CAP}).` };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runDailyStep(state) — master tick
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * runDailyStep(state)
  *
- * Executes one game day in the exact order mandated by Rule 02 / ecosystem-step skill:
- *   a. stepPopulation  — every non-stressor, non-extinct node
+ * Order-of-operations (updated for typed stressors):
+ *   PRE-0. processStressors — runoff propagation, overharvest drain (before Eq2
+ *          so stressor-driven symptoms cascade into the same day's population step)
+ *   a. stepPopulation  — every non-stressor, non-extinct node (Jacobi)
  *   b. checkExtinction — every node
  *   c. computeHealth   → state.meta.ecosystem_health
- *   d. updateMarketTier (inline stub; P8 wires hysteria.js)
+ *   d. updateMarketTier
  *   e. day_count += 1; collapse_timer -= 1
  *   f. player.resources += DAILY_INCOME
  *   g. evaluateWinLose
- *   h. state.resetDay()   (clears actionsThisStep)
- *   i. state.save()
- *
- * @param {object} state — GameState singleton (or mock with same shape)
+ *   h. state.resetDay() + state.save()
  */
 export function runDailyStep(state) {
+  // ── PRE-0. Typed stressor effects (before population step) ────────────────
+  processStressors(state);
+
   // ── a. Step populations — Jacobi (simultaneous) update ───────────────────
-  // Build a snapshot of ALL populations at the START of this step so that
-  // every node's foodFactor / predation reads beginning-of-step values.
-  // This makes the result independent of node key insertion order.
   const popSnapshot = {};
   for (const [id, n] of Object.entries(state.world.nodes)) {
     popSnapshot[id] = n.population;
@@ -304,7 +435,7 @@ export function runDailyStep(state) {
   for (const nodeId of Object.keys(state.world.nodes).sort()) {
     const n = state.world.nodes[nodeId];
     if (n.kind === 'stressor' || n.status === 'extinct') continue;
-    stepPopulation(nodeId, state, popSnapshot); // Jacobi: reads neighbours from snapshot
+    stepPopulation(nodeId, state, popSnapshot);
   }
 
   // ── b. Check extinction counters for all nodes ────────────────────────────
@@ -316,8 +447,6 @@ export function runDailyStep(state) {
   state.meta.ecosystem_health = computeHealth(state);
 
   // ── d. Update market tier ─────────────────────────────────────────────────
-  // TODO (P8): replace with hysteria.js updateTier(state) for full
-  //            price-factor & vendor-dialogue logic.
   state.meta.market_tier = tierForHealth(state.meta.ecosystem_health);
 
   // ── e. Advance day counters ───────────────────────────────────────────────
@@ -330,13 +459,13 @@ export function runDailyStep(state) {
   // ── g. Win / lose evaluation ──────────────────────────────────────────────
   evaluateWinLose(state);
 
-  // ── h & i. Clear per-step actions then persist ────────────────────────────
-  state.resetDay(); // clears actionsThisStep
+  // ── h. Clear per-step actions then persist ────────────────────────────────
+  state.resetDay();
   state.save();
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Self-tests (Rule 02-G, tests 1–8)
+   Self-tests (Rule 02-G)
    Run from the browser console:
      const { runEcosystemTests } = await import('./ecosystem.js');
      runEcosystemTests();
@@ -344,9 +473,6 @@ export function runDailyStep(state) {
 
 export function runEcosystemTests() {
 
-  // ── Minimal state factory ─────────────────────────────────────────────────
-  // Builds a 4-node coastal_wetland mock state in mid-band values.
-  // No dependency on biomes.json or localStorage — fully synchronous.
   function makeMock({
     seagrassL   = 75,
     shrimpL     = 70,
@@ -356,7 +482,8 @@ export function runEcosystemTests() {
     shrimpP     = 81,
     heronP      = 22,
     shrimpBeta  = 0.035,
-    heronBeta   = 0.045
+    heronBeta   = 0.045,
+    activeStressors = []
   } = {}) {
     const tiles = {
       t_runoff:   { id:'t_runoff',   stressor: runoffL,  protected: false },
@@ -388,20 +515,20 @@ export function runEcosystemTests() {
     return {
       meta: {
         seed:1337, biome_template:'coastal_wetland', day_count:1,
-        collapse_timer:30, health_streak:0, ecosystem_health:50, market_tier:'Degraded'
+        collapse_timer:40, health_streak:0, ecosystem_health:50, market_tier:'Degraded'
       },
       player: { resources:100, tile_x:4, tile_y:6, scanner_charges:5 },
-      world: { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{} },
+      world: { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors },
       notebook: { discovered_nodes:[], revealed_edges:[] },
-      vendor: { base_prices:{bioremediation:80,rebalancing:90,stabilization:150},
-                price_factor:1.3, available:['bioremediation','rebalancing','stabilization'] },
+      vendor: { base_prices:{bioremediation:60,rebalancing:90,stabilization:150},
+                price_factor:1.0, available:['bioremediation','rebalancing','stabilization'] },
       flags: { win:false, lose:false },
       resetDay() { this.world.actionsThisStep = {}; _saved = true; },
       save()     { _saved = true; }
     };
   }
 
-  // ── Test 1: Eq1 — carrying capacity collapses for fragile keystone (Rule 02-G #1) ──
+  // ── Test 1: Eq1 — carrying capacity collapses for fragile keystone ──────────
   {
     const s = makeMock({ seagrassL: 85 });
     s.world.nodes.n_seagrass.K_max   = 200;
@@ -412,7 +539,7 @@ export function runEcosystemTests() {
       `ECO FAIL T1: Eq1 keystone collapse — got ${K}, expected ${expected.toFixed(6)}`);
   }
 
-  // ── Test 2: Eq1 — pristine L=0 → K equals K_max (Rule 02-G #2) ────────────
+  // ── Test 2: Eq1 — pristine L=0 → K equals K_max ───────────────────────────
   {
     const s = makeMock({ seagrassL: 0 });
     s.world.nodes.n_seagrass.K_max  = 500;
@@ -422,31 +549,28 @@ export function runEcosystemTests() {
       `ECO FAIL T2: Eq1 pristine — got ${K}, expected 500`);
   }
 
-  // ── Test 3: population never negative under heavy predation / action (Rule 02-G #3) ──
+  // ── Test 3: population never negative under heavy predation / action ────────
   {
-    // Drive shrimp to near-extinction: very high beta + player action
     const s = makeMock({ shrimpP: 5, heronP: 100, heronBeta: 0.99 });
-    s.world.actionsThisStep['n_shrimp'] = 9999; // enormous player removal
+    s.world.actionsThisStep['n_shrimp'] = 9999;
     stepPopulation('n_shrimp', s);
     console.assert(s.world.nodes.n_shrimp.population >= 0,
       `ECO FAIL T3: population went negative: ${s.world.nodes.n_shrimp.population}`);
   }
 
-  // ── Test 4: stability clamp — |delta| ≤ 0.35·P (Rule 02-G #4) ─────────────
+  // ── Test 4: stability clamp — |delta| ≤ 0.35·P ─────────────────────────────
   {
-    // Use a node with very high r to force a large unclamped growth
     const s = makeMock({ seagrassL: 0, seagrassP: 10 });
-    s.world.nodes.n_seagrass.r = 10; // absurd growth rate
+    s.world.nodes.n_seagrass.r = 10;
     const P_before = s.world.nodes.n_seagrass.population;
     stepPopulation('n_seagrass', s);
     const P_after = s.world.nodes.n_seagrass.population;
     const delta = Math.abs(P_after - P_before);
-    // Allow Math.round rounding to add ≤ 0.5 on top of the clamp
     console.assert(delta <= Math.ceil(MAX_DELTA_FRAC * P_before) + 1,
       `ECO FAIL T4: stability clamp violated — |delta|=${delta} > 0.35×${P_before}`);
   }
 
-  // ── Test 5: stressor node is skipped — population unchanged ─────────────────
+  // ── Test 5: stressor node is skipped ──────────────────────────────────────
   {
     const s = makeMock();
     s.world.nodes.n_runoff.population = 0;
@@ -460,7 +584,6 @@ export function runEcosystemTests() {
   {
     const sA = makeMock({ seagrassP:125, shrimpP:81, heronP:22 });
     const sB = makeMock({ seagrassP:125, shrimpP:81, heronP:22 });
-    // Run one full daily step on each mock
     for (const nodeId of ['n_seagrass','n_shrimp','n_heron']) {
       stepPopulation(nodeId, sA);
       stepPopulation(nodeId, sB);
@@ -473,12 +596,10 @@ export function runEcosystemTests() {
     );
   }
 
-  // ── Test 7: bottom-up cascade — zero producer → consumer starvation (Rule 02-G #7) ──
+  // ── Test 7: bottom-up cascade — zero producer → consumer starvation ─────────
   {
-    // Zero out seagrass. With no food, shrimp's foodFactor→0 → starvation each step.
     const s = makeMock({ seagrassP: 0, shrimpP: 100 });
     const shrimpBefore = s.world.nodes.n_shrimp.population;
-    // Step shrimp only (seagrass already at 0, heron won't affect this test)
     stepPopulation('n_shrimp', s);
     const shrimpAfter = s.world.nodes.n_shrimp.population;
     console.assert(shrimpAfter < shrimpBefore,
@@ -486,14 +607,9 @@ export function runEcosystemTests() {
       `before=${shrimpBefore}, after=${shrimpAfter}`);
   }
 
-  // ── Test 8: apex node (no outgoing trophic edge) takes zero predation loss (Rule 02-G #8) ──
+  // ── Test 8: apex node takes zero predation loss ──────────────────────────────
   {
-    // n_heron has no outgoing edge → predation on n_shrimp via heron should come from
-    // edge n_shrimp→n_heron. Check that n_heron itself suffers zero predation
-    // (there is no node that eats n_heron).
     const s = makeMock({ heronP: 22, shrimpP: 81 });
-
-    // Manually compute predation for n_heron: look for edges where e.from === 'n_heron'
     let predation = 0;
     for (const e of s.world.edges) {
       if (e.from !== 'n_heron') continue;
@@ -503,40 +619,29 @@ export function runEcosystemTests() {
     }
     console.assert(predation === 0,
       `ECO FAIL T8: apex node n_heron should have zero predation; got ${predation}`);
-
-    // Also verify that stepping n_heron actually increases or stays flat (no predation loss
-    // dragging it down below what logistic alone would give).
-    const heronBefore = s.world.nodes.n_heron.population;
-    stepPopulation('n_heron', s);
-    // Under starvation from depleted shrimp it may decline, but predation term must be 0.
-    // Re-run with abundant shrimp to confirm heron can only grow under good conditions.
     const sGood = makeMock({ heronP:22, shrimpP:300, shrimpL:0, heronL:0 });
     const heronGoodBefore = sGood.world.nodes.n_heron.population;
     stepPopulation('n_heron', sGood);
     console.assert(sGood.world.nodes.n_heron.population >= heronGoodBefore,
-      `ECO FAIL T8b: apex node should grow under abundant food; ` +
-      `before=${heronGoodBefore}, after=${sGood.world.nodes.n_heron.population}`);
-    void heronBefore; // suppress lint
+      `ECO FAIL T8b: apex node should grow under abundant food`);
   }
 
-  // ── Test 9: Jacobi order-independence — same result regardless of node insertion order ──
-  // Build two mocks with the same node values but different insertion orders.
-  // Run a full runDailyStep on each; all three biological populations must match.
+  // ── Test 9: Jacobi order-independence ───────────────────────────────────────
   {
     function makeMockOrdered(nodeOrder) {
       const nodeDefs = {
-        n_runoff:  { id:'n_runoff',  name:'Runoff',        kind:'stressor',  keystone:false,
+        n_runoff:  { id:'n_runoff',  kind:'stressor',  keystone:false,
                      tileId:'t_runoff',  population:0,   r:0,    K_max:0,   alpha:0,   weight:0,
-                     status:'stable', extinction_counter:0 },
-        n_seagrass:{ id:'n_seagrass',name:'Seagrass',      kind:'producer',  keystone:true,
+                     status:'stable', extinction_counter:0, name:'Runoff' },
+        n_seagrass:{ id:'n_seagrass',kind:'producer',  keystone:true,
                      tileId:'t_seagrass',population:125, r:0.15, K_max:500, alpha:0.85, weight:2.5,
-                     status:'stable', extinction_counter:0 },
-        n_shrimp:  { id:'n_shrimp',  name:'Shrimp',        kind:'consumer',  keystone:false,
+                     status:'stable', extinction_counter:0, name:'Seagrass' },
+        n_shrimp:  { id:'n_shrimp',  kind:'consumer',  keystone:false,
                      tileId:'t_shrimp',  population:81,  r:0.13, K_max:325, alpha:1.5, weight:1.25,
-                     status:'stable', extinction_counter:0 },
-        n_heron:   { id:'n_heron',   name:'Painted Stork', kind:'predator',  keystone:true,
+                     status:'stable', extinction_counter:0, name:'Shrimp' },
+        n_heron:   { id:'n_heron',   kind:'predator',  keystone:true,
                      tileId:'t_heron',   population:22,  r:0.07, K_max:90,  alpha:2.3, weight:3.5,
-                     status:'stable', extinction_counter:0 }
+                     status:'stable', extinction_counter:0, name:'Painted Stork' }
       };
       const nodes = {};
       for (const id of nodeOrder) nodes[id] = JSON.parse(JSON.stringify(nodeDefs[id]));
@@ -554,35 +659,81 @@ export function runEcosystemTests() {
       ];
       return {
         meta: { seed:42, biome_template:'coastal_wetland', day_count:1,
-                collapse_timer:30, health_streak:0, ecosystem_health:50, market_tier:'Degraded' },
+                collapse_timer:40, health_streak:0, ecosystem_health:50, market_tier:'Degraded' },
         player: { resources:100, tile_x:4, tile_y:6, scanner_charges:5 },
-        world:  { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{} },
+        world:  { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors:[] },
         notebook: { discovered_nodes:[], revealed_edges:[] },
-        vendor: { base_prices:{bioremediation:80,rebalancing:90,stabilization:150},
-                  price_factor:1.3, available:[] },
+        vendor: { base_prices:{bioremediation:60,rebalancing:90,stabilization:150},
+                  price_factor:1.0, available:[] },
         flags: { win:false, lose:false },
         resetDay() { this.world.actionsThisStep = {}; },
         save()     { /* no-op */ }
       };
     }
 
-    // Order A: natural insertion order
     const sA = makeMockOrdered(['n_runoff','n_seagrass','n_shrimp','n_heron']);
-    // Order B: reversed biological nodes
     const sB = makeMockOrdered(['n_heron','n_shrimp','n_seagrass','n_runoff']);
-
     runDailyStep(sA);
     runDailyStep(sB);
-
     console.assert(
       sA.world.nodes.n_seagrass.population === sB.world.nodes.n_seagrass.population &&
       sA.world.nodes.n_shrimp.population   === sB.world.nodes.n_shrimp.population   &&
       sA.world.nodes.n_heron.population    === sB.world.nodes.n_heron.population,
-      `ECO FAIL T9: daily step result differs by node order — ` +
-      `seagrass: ${sA.world.nodes.n_seagrass.population} vs ${sB.world.nodes.n_seagrass.population}, ` +
-      `shrimp: ${sA.world.nodes.n_shrimp.population} vs ${sB.world.nodes.n_shrimp.population}, ` +
-      `heron: ${sA.world.nodes.n_heron.population} vs ${sB.world.nodes.n_heron.population}`
+      `ECO FAIL T9: daily step result differs by node order`
     );
+  }
+
+  // ── Test 10: runoff propagation — L spreads to neighbours ───────────────────
+  {
+    const s = makeMock({
+      activeStressors: [{ type:'runoff', sourceTileId:'t_runoff', spreadRate: RUNOFF_SPREAD }]
+    });
+    // Place a tile adjacent to t_runoff (which maps to 't_runoff' alias — not a real grid tile)
+    // Use grid tiles instead: source t_2_2, neighbour t_2_3
+    s.world.tiles['t_2_2'] = { id:'t_2_2', x:2, y:2, stressor:50, protected:false };
+    s.world.tiles['t_2_3'] = { id:'t_2_3', x:2, y:3, stressor:10, protected:false };
+    s.world.activeStressors = [{ type:'runoff', sourceTileId:'t_2_2', spreadRate: RUNOFF_SPREAD }];
+    const beforeL = s.world.tiles['t_2_3'].stressor;
+    processStressors(s);
+    const afterL  = s.world.tiles['t_2_3'].stressor;
+    console.assert(afterL > beforeL,
+      `ECO FAIL T10: runoff should spread L to neighbours; before=${beforeL}, after=${afterL}`);
+  }
+
+  // ── Test 11: overharvest drain — target loses population unless protected ────
+  {
+    const s = makeMock({
+      shrimpP: 100,
+      activeStressors: [{ type:'overharvest', targetNative:'n_shrimp', harvestDrain: 8 }]
+    });
+    const before = s.world.nodes.n_shrimp.population;
+    processStressors(s);
+    console.assert(s.world.nodes.n_shrimp.population < before,
+      `ECO FAIL T11: overharvest should drain shrimp population`);
+
+    // Protected tile should block drain
+    s.world.nodes.n_shrimp.population = before;
+    s.world.tiles['t_shrimp'].protected = true;
+    processStressors(s);
+    console.assert(s.world.nodes.n_shrimp.population === before,
+      `ECO FAIL T11b: protected tile should block overharvest drain`);
+  }
+
+  // ── Test 12: applyCull removes CULL_FRAC of population ──────────────────────
+  {
+    const s = makeMock({ shrimpP: 100 });
+    s.world.nodes.n_invasive = { id:'n_invasive', kind:'invasive', keystone:false,
+      tileId:'t_shrimp', population:200, r:0.2, K_max:300, alpha:1.2, weight:0,
+      status:'stable', extinction_counter:0, name:'Invasive' };
+    const before = s.world.nodes.n_invasive.population;
+    applyCull('n_invasive', s);
+    const after = s.world.nodes.n_invasive.population;
+    console.assert(after < before,
+      `ECO FAIL T12: cull should reduce invasive population; before=${before}, after=${after}`);
+    const removal = before - after;
+    console.assert(removal >= Math.floor(CULL_FRAC * before) - 1 &&
+                   removal <= Math.ceil(CULL_FRAC * before) + 1,
+      `ECO FAIL T12b: cull removal ${removal} outside expected range`);
   }
 
   console.log('[ecosystem.js] All self-tests passed ✓');

@@ -64,8 +64,38 @@
       "populationFrac": [0.35, 0.55]
     },
 
+    "_comment_stressorPool": "Seed-selected typed stressors. generator.js picks 1 (60%) or 2 (40%) distinct types per world. Each entry defines the per-type instantiation bands.",
+    "stressorPool": [
+      {
+        "type": "runoff",
+        "_comment": "Nutrient-pollution source tile. Propagates +RUNOFF_SPREAD to neighbours each day. Counter: bioremediation on source tile (L→0 stops spread).",
+        "sourceLBand":  [45, 70],
+        "spreadRate":   [3,  6]
+      },
+      {
+        "type": "invasive",
+        "_comment": "Introduced competitor/predator node (n_invasive). Preys on / competes with a target native. Low r and very low beta so suppression is slow — human-fair. Counter: cull(nodeId).",
+        "targetNative": "n_shrimp",
+        "bands": {
+          "r":      [0.07, 0.12],
+          "K_max":  [120,  200],
+          "alpha":  [0.7,  1.0],
+          "weight": [0,    0]
+        },
+        "betaBand": [0.008, 0.018],
+        "populationFrac": [0.15, 0.25]
+      },
+      {
+        "type": "overharvest",
+        "_comment": "Continuous daily drain on a target native. Independent of pollution or predation. Counter: protect(tileId) → tile.protected=true zeros the drain.",
+        "targetNative":    "n_shrimp",
+        "drainBand":       [3, 6],
+        "protectCapStressor": 20
+      }
+    ],
+
     "defaults": {
-      "_comment": "Guaranteed-valid fallback world used when 50 seed rerolls all fail validation. Mid-band parameters, stressor at 60/50/40/10 (balanced for greedy win ≤30 days), populations at 45% of K_max.",
+      "_comment": "Guaranteed-valid fallback world used when 50 seed rerolls all fail validation. Mid-band parameters, runoff stressor only, populations at 45% of K_max.",
       "grid": { "w": 16, "h": 12 },
       "tiles": {
         "t_0_0":  { "id": "t_0_0",  "x": 0,  "y": 0,  "type": "source", "stressor": 60, "protected": false },
@@ -108,7 +138,14 @@
         { "from": "n_seagrass","to": "n_shrimp",   "beta": 0.035,"revealed": false },
         { "from": "n_shrimp",  "to": "n_heron",    "beta": 0.045,"revealed": false }
       ],
-      "actionsThisStep": {}
+      "actionsThisStep": {},
+      "activeStressors": [
+        {
+          "type": "runoff",
+          "sourceTileId": "t_0_0",
+          "spreadRate": 4
+        }
+      ]
     }
   }
 }

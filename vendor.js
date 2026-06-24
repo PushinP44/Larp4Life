@@ -4,9 +4,9 @@
  * Interventions (Rule 02-F verbatim):
  *   Bioremediation  base ¤60  → reduce stressor L on the PLAYER'S CURRENT TILE by 50
  *                                (deductive core: player must navigate to the right tile)
- *   Rebalancing     base ¤90  → reintroduce a native species (P→20% K_max) if any node
+ *   Rebalancing     base ¤55  → reintroduce a native species (P→20% K_max) if any node
  *                                has L<20 AND P<20; OR cull an invasive (no keystone with
- *                                P>K_max*0.8) to cut its pop by 30%
+ *                                P>K_max*0.8) to cut its pop by 45%
  *   Stabilization   base ¤150 → PROTECT the player's current tile (tile.protected=true,
  *                                stressor growth frozen) AND raise its effective K by
  *                                capping its stressor at 20 for the next step calculation
@@ -104,8 +104,8 @@ export function applyIntervention(type, state) {
 
         if (cullTarget) {
           const before = cullTarget.population;
-          cullTarget.population = Math.max(0, Math.round(before * 0.70)); // cull 30%
-          effectMessage = `${cullTarget.name}: invasive culled ${before} → ${cullTarget.population} (−30%).`;
+          cullTarget.population = Math.max(0, Math.round(before * 0.55)); // cull 45%
+          effectMessage = `${cullTarget.name}: invasive culled ${before} → ${cullTarget.population} (−45%).`;
         } else {
           // Neither condition applies — refund and report
           state.player.resources += cost;

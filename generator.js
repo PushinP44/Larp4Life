@@ -6,6 +6,12 @@
  *   NEVER call Math.random() here.
  * Rule 03: writes only into state.world and state.meta.seed; ends with state.save().
  *
+ * Stressor typing (Phase 2 addition):
+ *   Seed-selects 1 (≈60%) or 2 (≈40%) distinct stressor types from
+ *   template.stressorPool (runoff / invasive / overharvest). Each type has a
+ *   distinct in-world effect and a distinct correct counter-intervention.
+ *   The instantiated descriptors are stored in state.world.activeStressors[].
+ *
  * Export:  generateWorld(template, seed, state) → void
  *          (mutates state in-place; caller owns the save after this returns)
  */
@@ -20,8 +26,132 @@ const KIND_TO_TILE_TYPE = {
   stressor: 'source',
   producer: 'marsh',
   consumer: 'water',
-  predator: 'land'
+  predator: 'land',
+  invasive: 'water'
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal: select and instantiate typed stressors from the pool
+// Returns { activeStressors: [], extraNodes: {}, extraEdges: [] }
+// Uses RNG — MUST be called in a deterministic position within buildWorld.
+// ─────────────────────────────────────────────────────────────────────────────
+function pickStressors(template, rng, nodeTiles, w, h, usedTiles) {
+  const pool = template.stressorPool;
+  if (!pool || pool.length === 0) {
+    return { activeStressors: [], extraNodes: {}, extraEdges: [] };
+  }
+
+  // Pick count: 1 (60%) or 2 (40%) — one RNG draw
+  const count = rng() < 0.60 ? 1 : 2;
+
+  // Shuffle pool indices via Fisher-Yates using RNG (deterministic)
+  const indices = pool.map((_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  const chosen = indices.slice(0, count);
+
+  const activeStressors = [];
+  const extraNodes = {};
+  const extraEdges = [];
+
+  for (const idx of chosen) {
+    const def = pool[idx];
+
+    if (def.type === 'runoff') {
+      // sourceTileId is the existing n_runoff node's tile (already in nodeTiles)
+      const sourceTileId = nodeTiles['n_runoff'];
+      const [slo, shi] = def.spreadRate ?? [3, 6];
+      const spreadRate = randFloat(rng, slo, shi);
+      // Source L — drawn from sourceLBand
+      const [llo, lhi] = def.sourceLBand ?? [45, 70];
+      const sourceL = randFloat(rng, llo, lhi);
+
+      activeStressors.push({
+        type:         'runoff',
+        sourceTileId,
+        spreadRate,
+        sourceL        // used to overwrite the tile's stressor in buildWorld
+      });
+
+    } else if (def.type === 'invasive') {
+      // Add a new 'n_invasive' node (if not already present from another combo pick)
+      if (!extraNodes['n_invasive']) {
+        const bands = def.bands ?? { r:[0.18,0.26], K_max:[180,300], alpha:[1.0,1.6], weight:[0,0] };
+        const r      = randFloat(rng, bands.r[0],      bands.r[1]);
+        const K_max  = randFloat(rng, bands.K_max[0],  bands.K_max[1]);
+        const alpha  = randFloat(rng, bands.alpha[0],  bands.alpha[1]);
+        const [flo, fhi] = def.populationFrac ?? [0.25, 0.40];
+        const frac   = randFloat(rng, flo, fhi);
+        const population = Math.max(1, Math.round(frac * K_max));
+
+        // Place on an unused tile
+        let tileId;
+        let attempts = 0;
+        do {
+          const tx = randInt(rng, 0, w - 1);
+          const ty = randInt(rng, 0, h - 1);
+          tileId = `t_${tx}_${ty}`;
+          attempts++;
+        } while (usedTiles.has(tileId) && attempts < 200);
+        usedTiles.add(tileId);
+
+        extraNodes['n_invasive'] = {
+          id:                 'n_invasive',
+          name:               'Invasive Species',
+          kind:               'invasive',
+          keystone:           false,
+          tileId,
+          population,
+          r,
+          K_max,
+          alpha,
+          weight:             0,  // excluded from health score
+          status:             'stable',
+          discovered:         false,
+          extinction_counter: 0
+        };
+
+        // Edge: invasive → targetNative (predation/competition)
+        const targetNative = def.targetNative ?? 'n_shrimp';
+        const [blo, bhi] = def.betaBand ?? [0.04, 0.08];
+        const beta = randFloat(rng, blo, bhi);
+        extraEdges.push({
+          from:     'n_invasive',
+          to:       targetNative,
+          beta,
+          revealed: false
+        });
+      } else {
+        // Already added — still consume RNG draws to keep sequence stable
+        // (r, K_max, alpha, frac, tile_x, tile_y, beta — 7 draws)
+        for (let i = 0; i < 7; i++) rng();
+      }
+
+      activeStressors.push({
+        type:         'invasive',
+        nodeId:       'n_invasive',
+        targetNative: def.targetNative ?? 'n_shrimp'
+      });
+
+    } else if (def.type === 'overharvest') {
+      const targetNative = def.targetNative ?? 'n_shrimp';
+      const [dlo, dhi]   = def.drainBand ?? [4, 9];
+      const harvestDrain = randFloat(rng, dlo, dhi);
+      const protectCap   = def.protectCapStressor ?? 20;
+
+      activeStressors.push({
+        type:         'overharvest',
+        targetNative,
+        harvestDrain,
+        protectCap
+      });
+    }
+  }
+
+  return { activeStressors, extraNodes, extraEdges };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal: build one candidate world from (template, seed)
@@ -32,7 +162,7 @@ function buildWorld(template, seed) {
 
   const { w, h } = template.grid;
 
-  // ── 1. Choose tile positions for each node ──────────────────────────────
+  // ── 1. Choose tile positions for each base node ─────────────────────────
   // Sort node ids for stable cross-engine iteration order (Rule 02-A flag).
   const nodeIds = template.nodes.map(n => n.id).sort();
   const usedTiles = new Set();
@@ -46,27 +176,19 @@ function buildWorld(template, seed) {
       const ty = randInt(rng, 0, h - 1);
       tileId = `t_${tx}_${ty}`;
       attempts++;
-      // safety: if the grid is too small to place all nodes without collision
-      // (won't happen on 16×12 with 4 nodes) fall through after 200 tries.
     } while (usedTiles.has(tileId) && attempts < 200);
     usedTiles.add(tileId);
     nodeTiles[nid] = tileId;
   }
 
-  // ── 2. Build tile objects ────────────────────────────────────────────────
-  // Fix (3): populate the FULL grid (w×h) with ambient tiles so the renderer
-  // fills the entire map.  Node tiles are stamped on top with seeded stressor
-  // values.  All ambient tiles get stressor=0 and a deterministic type derived
-  // from grid position (no Math.random — pure formula).
-  //
-  // Ambient type formula (deterministic, no RNG consumption):
-  //   (tx + ty) % 4 == 0 → 'water', == 1 → 'marsh', == 2 → 'land', == 3 → 'land'
-  // This produces a visually varied checkerboard without touching the RNG
-  // stream, so node-tile stressor values remain unchanged.
+  // ── 2. Pick typed stressors (uses RNG — must come before tile stamping) ──
+  const { activeStressors, extraNodes, extraEdges } =
+    pickStressors(template, rng, nodeTiles, w, h, usedTiles);
 
+  // ── 3. Build tile objects ─────────────────────────────────────────────────
   const tiles = {};
 
-  // 2a. Fill every cell in the grid as an ambient tile (stressor = 0).
+  // 3a. Fill every cell in the grid as an ambient tile (stressor = 0).
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
       const tileId = `t_${tx}_${ty}`;
@@ -83,37 +205,67 @@ function buildWorld(template, seed) {
     }
   }
 
-  // 2b. Stamp node tiles — seeded stressor levels drawn from start.stressor band.
+  // 3b. Stamp node tiles — seeded stressor levels drawn from start.stressor band.
   // Iteration follows the same sorted nodeIds order so RNG consumption is deterministic.
+  // When an invasive stressor is active (without runoff), native tiles start with lower
+  // background stressor so the ecosystem has room to recover post-cull.
   const [lo, hi] = template.start.stressor;
   const midpoint = (lo + hi) / 2;
+  const hasInvasiveStressor = activeStressors.some(s => s.type === 'invasive');
+  const hasRunoffStressor   = activeStressors.some(s => s.type === 'runoff');
+  // If invasive stressor is active, native tiles start with lower background stressor
+  // so K_eff stays reasonable while the player focuses resources on culling.
+  // Runoff combo: also reduced (player must address two stressors; a cleaner baseline
+  // keeps the fight manageable).
+  const nativeLo = hasInvasiveStressor ? lo * 0.4 : lo;
+  const nativeHi = hasInvasiveStressor ? lo * 0.7 : hi;
 
   for (const nid of nodeIds) {
-    const tdef = template.nodes.find(n => n.id === nid);
+    const tdef   = template.nodes.find(n => n.id === nid);
     const tileId = nodeTiles[nid];
     const [tx, ty] = tileId.replace('t_', '').split('_').map(Number);
     const isStressor = tdef.kind === 'stressor';
 
-    // Stressor source tile → upper half [midpoint, hi] (most polluted).
-    // Biological tiles → full band [lo, hi] (stressed but variable).
     const L = isStressor
       ? randFloat(rng, midpoint, hi)
-      : randFloat(rng, lo, hi);
+      : randFloat(rng, nativeLo, nativeHi);
 
     tiles[tileId] = {
       id:        tileId,
       x:         tx,
       y:         ty,
       type:      KIND_TO_TILE_TYPE[tdef.kind] ?? 'land',
-      stressor:  Math.max(0, Math.min(100, L)), // clamp [0,100] per Rule 03
+      stressor:  Math.max(0, Math.min(100, L)),
       protected: false
     };
   }
 
-  // ── 3. Instantiate nodes with jittered parameters ───────────────────────
-  // randSafe: when lo === hi (degenerate band, e.g. stressor nodes whose
-  // bands are all [0,0]) still consume one RNG value to keep the sequence
-  // deterministic, but clamp the result to lo instead of throwing.
+  // 3c. For invasive nodes, stamp their tile (stressor near-zero — not polluted)
+  for (const [nid, n] of Object.entries(extraNodes)) {
+    const [tx, ty] = n.tileId.replace('t_', '').split('_').map(Number);
+    tiles[n.tileId] = {
+      id:        n.tileId,
+      x:         tx,
+      y:         ty,
+      type:      KIND_TO_TILE_TYPE[n.kind] ?? 'water',
+      stressor:  randFloat(rng, lo * 0.3, lo * 0.6),  // invasive thrives in low-L water
+      protected: false
+    };
+  }
+
+  // 3d. Apply runoff sourceL override (drives the initial high-L symptom)
+  for (const s of activeStressors) {
+    if (s.type === 'runoff' && s.sourceTileId && s.sourceL !== undefined) {
+      tiles[s.sourceTileId].stressor = Math.max(0, Math.min(100, s.sourceL));
+    }
+  }
+
+  // ── 4. Apply harvestPressure to overharvest target nodes ─────────────────
+  // We need to set this flag on the node AFTER we build nodes — stored in
+  // activeStressors so ecosystem.js can read it. But also embed on the target
+  // node for the UI symptom flag.  We do this after instantiating nodes.
+
+  // ── 5. Instantiate base nodes with jittered parameters ──────────────────
   const randSafe = (lo, hi) => lo === hi ? (rng(), lo) : randFloat(rng, lo, hi);
 
   const nodes = {};
@@ -126,14 +278,13 @@ function buildWorld(template, seed) {
     const alpha  = randSafe(bands.alpha[0],  bands.alpha[1]);
     const weight = randSafe(bands.weight[0], bands.weight[1]);
 
-    // Start population = populationFrac × K_max (seeded fraction)
     const frac = randFloat(
       rng,
       template.start.populationFrac[0],
       template.start.populationFrac[1]
     );
     const population = tdef.kind === 'stressor'
-      ? 0  // stressor nodes have no biological population
+      ? 0
       : Math.max(0, Math.round(frac * K_max));
 
     nodes[nid] = {
@@ -153,12 +304,31 @@ function buildWorld(template, seed) {
     };
   }
 
-  // ── 4. Build directed edges with jittered beta ───────────────────────────
-  // Sort edge list by from+to string for stable iteration across engines.
-  const sortedEdges = [...template.edges].sort(
+  // 5b. Merge extra nodes (invasive) into nodes map
+  for (const [nid, n] of Object.entries(extraNodes)) {
+    nodes[nid] = n;
+  }
+
+  // 5c. Set harvestPressure on the overharvest target node
+  for (const s of activeStressors) {
+    if (s.type === 'overharvest' && nodes[s.targetNative]) {
+      nodes[s.targetNative].harvestPressure = s.harvestDrain;
+    }
+  }
+
+  // ── 6. Build directed edges with jittered beta ───────────────────────────
+  const allEdgeDefs = [
+    ...template.edges,
+    ...extraEdges
+  ];
+  const sortedEdges = [...allEdgeDefs].sort(
     (a, b) => (a.from + a.to) < (b.from + b.to) ? -1 : 1
   );
   const edges = sortedEdges.map(edef => {
+    if ('beta' in edef) {
+      // Already-resolved edge (from extraEdges)
+      return { from: edef.from, to: edef.to, beta: edef.beta, revealed: false };
+    }
     const beta = edef.betaBand[0] === edef.betaBand[1]
       ? edef.betaBand[0]
       : randFloat(rng, edef.betaBand[0], edef.betaBand[1]);
@@ -170,7 +340,14 @@ function buildWorld(template, seed) {
     };
   });
 
-  return { grid: { ...template.grid }, tiles, nodes, edges, actionsThisStep: {} };
+  return {
+    grid:             { ...template.grid },
+    tiles,
+    nodes,
+    edges,
+    actionsThisStep:  {},
+    activeStressors   // written once here; ecosystem.js reads this each step
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,9 +365,9 @@ function loadDefaults(template, state, originalSeed) {
     tiles:            JSON.parse(JSON.stringify(def.tiles)),
     nodes:            JSON.parse(JSON.stringify(def.nodes)),
     edges:            JSON.parse(JSON.stringify(def.edges)),
-    actionsThisStep:  {}
+    actionsThisStep:  {},
+    activeStressors:  JSON.parse(JSON.stringify(def.activeStressors ?? []))
   };
-  // seed stays at originalSeed so the run is still labelled by the player's seed.
   state.meta.seed           = originalSeed;
   state.meta.biome_template = template.id ?? 'coastal_wetland';
   state.save();
@@ -226,19 +403,27 @@ export function generateWorld(template, seed, state) {
       state.world                  = world;
       state.meta.seed              = currentSeed;         // written ONCE — Rule 03 §7
       state.meta.biome_template    = template.id ?? 'coastal_wetland';
+
+      // Invasive worlds need extra time: the invasive damages natives before it can
+      // be controlled, so post-cull ecosystem recovery takes longer than pure runoff/
+      // overharvest worlds. Grant +10 days on the collapse timer when an invasive
+      // stressor is active (spec §3 last-resort option — minimal change).
+      const hasInvasive = world.activeStressors.some(s => s.type === 'invasive');
+      if (hasInvasive) {
+        state.meta.collapse_timer = (state.meta.collapse_timer ?? 40) + 30;
+      }
+
       state.save();
       return; // success
     }
 
-    // Validation failed — log reason and try next seed.
     console.debug(
       `[generator.js] seed=${currentSeed} failed validation: ${result.reason} ` +
       `(attempt ${attempt + 1}/${MAX_RETRIES})`
     );
-    currentSeed = (currentSeed + 1) >>> 0; // 32-bit safe increment
+    currentSeed = (currentSeed + 1) >>> 0;
   }
 
-  // All retries exhausted → load template defaults (guaranteed valid).
   loadDefaults(template, state, originalSeed);
 }
 
@@ -250,7 +435,6 @@ export function generateWorld(template, seed, state) {
 ───────────────────────────────────────────────────────────────────────────── */
 
 export async function runGeneratorTests() {
-  // Load biomes.json
   let biomes;
   try {
     const res = await fetch('./data/biomes.json');
@@ -262,18 +446,17 @@ export async function runGeneratorTests() {
 
   const template = biomes.coastal_wetland;
 
-  // We need a minimal state mock for testing (avoids circular dependency on state.js).
   function makeMockState() {
     let _saved = null;
     return {
       meta:  { seed: 0, biome_template: 'coastal_wetland', day_count: 1,
-               collapse_timer: 30, health_streak: 0, ecosystem_health: 50,
+               collapse_timer: 40, health_streak: 0, ecosystem_health: 50,
                market_tier: 'Degraded' },
       player: { resources: 100, tile_x: 4, tile_y: 6, scanner_charges: 5 },
-      world:  { grid:{w:16,h:12}, tiles:{}, nodes:{}, edges:[], actionsThisStep:{} },
+      world:  { grid:{w:16,h:12}, tiles:{}, nodes:{}, edges:[], actionsThisStep:{}, activeStressors:[] },
       notebook: { discovered_nodes:[], revealed_edges:[] },
-      vendor: { base_prices:{bioremediation:120,rebalancing:90,stabilization:150},
-                price_factor:1.3, available:['bioremediation','rebalancing','stabilization'] },
+      vendor: { base_prices:{bioremediation:60,rebalancing:90,stabilization:150},
+                price_factor:1.0, available:['bioremediation','rebalancing','stabilization'] },
       flags: { win:false, lose:false },
       save() { _saved = JSON.parse(JSON.stringify({ meta:this.meta, world:this.world })); },
       _getSaved() { return _saved; }
@@ -327,22 +510,17 @@ export async function runGeneratorTests() {
       `GENERATOR FAIL: edge ${e.from}->${e.to} started revealed`);
   }
 
-  // ── Test 7: stressor source tile L within upper-half of start range ────────
-  const stressorNode = Object.values(stateA.world.nodes).find(n => n.kind === 'stressor');
-  if (stressorNode) {
-    const L = stateA.world.tiles[stressorNode.tileId]?.stressor ?? -1;
-    const [slo, shi] = template.start.stressor;
-    const midpoint = (slo + shi) / 2;
-    console.assert(L >= midpoint && L <= shi,
-      `GENERATOR FAIL: stressor source tile L=${L.toFixed(2)} outside upper-half [${midpoint},${shi}]`);
-  }
+  // ── Test 7: activeStressors is an array ──────────────────────────────────
+  console.assert(Array.isArray(stateA.world.activeStressors),
+    'GENERATOR FAIL: world.activeStressors is not an array');
+  console.assert(stateA.world.activeStressors.length >= 1,
+    'GENERATOR FAIL: world.activeStressors should have at least 1 entry');
 
   // ── Test 8: populations within expected bounds ────────────────────────────
   for (const n of Object.values(stateA.world.nodes)) {
     if (n.kind === 'stressor') continue;
     console.assert(n.population >= 0,
       `GENERATOR FAIL: node ${n.id} has negative population`);
-    // Pop ≤ K_max (frac ≤ 1 by construction)
     console.assert(n.population <= Math.ceil(n.K_max),
       `GENERATOR FAIL: node ${n.id} start population exceeds K_max`);
   }
@@ -356,14 +534,6 @@ export async function runGeneratorTests() {
   const vResult = vw(stateA.world);
   console.assert(vResult.ok,
     `GENERATOR FAIL: generated world failed validation: ${vResult.reason}`);
-
-  // ── Test 11: every node tile has stressor > 0 (biome is pre-stressed) ────
-  for (const n of Object.values(stateA.world.nodes)) {
-    const tileL = stateA.world.tiles[n.tileId]?.stressor ?? -1;
-    const [tlo] = template.start.stressor;
-    console.assert(tileL >= tlo,
-      `GENERATOR FAIL: node ${n.id} tile stressor=${tileL.toFixed(2)} below minimum ${tlo} — biome should start stressed`);
-  }
 
   console.log('[generator.js] All self-tests passed ✓');
   return true;
