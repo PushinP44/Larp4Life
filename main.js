@@ -24,6 +24,7 @@ import {
 import { runDailyStep, computeHealth } from './ecosystem.js';
 import { initInput, triggerScan, scanTile, tickMovement } from './input.js';
 import { buildNotebookHTML }  from './notebook.js';
+import { escapeHTML, escapeAttr } from './safehtml.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
 import { updateTier, loadDialogue } from './hysteria.js';
 import {
@@ -283,21 +284,21 @@ function showWinCard() {
           display:flex;align-items:center;justify-content:center;
           border-radius:10px;flex-shrink:0;line-height:1;
           box-shadow:0 2px 10px rgba(0,0,0,0.45);
-        ">${grade}</span>
-        <span style="font-size:0.95em;opacity:0.9;font-style:italic;">${line}</span>
+        ">${escapeHTML(grade)}</span>
+        <span style="font-size:0.95em;opacity:0.9;font-style:italic;">${escapeHTML(line)}</span>
       </div>
 
-      <pre class="field-report">${report}</pre>
+      <pre class="field-report">${escapeHTML(report)}</pre>
 
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
         <button class="btn" data-action="new-seed"
           style="flex:1;min-width:130px;font-size:0.95em;">
           New Seed →
         </button>
-        <button class="btn" data-action="retry-seed" data-seed="${currentSeed}"
+        <button class="btn" data-action="retry-seed" data-seed="${escapeAttr(currentSeed)}"
           style="flex:1;min-width:130px;font-size:0.95em;background:transparent;
                  border:1px solid var(--accent);color:var(--accent);">
-          Retry Seed ${currentSeed}
+          Retry Seed ${escapeHTML(currentSeed)}
         </button>
       </div>
     </div>
@@ -323,16 +324,16 @@ function showLoseCard() {
           display:flex;align-items:center;justify-content:center;
           border-radius:10px;flex-shrink:0;line-height:1;
           box-shadow:0 2px 10px rgba(0,0,0,0.45);
-        ">${grade}</span>
-        <span style="font-size:0.95em;opacity:0.9;font-style:italic;">${line}</span>
+        ">${escapeHTML(grade)}</span>
+        <span style="font-size:0.95em;opacity:0.9;font-style:italic;">${escapeHTML(line)}</span>
       </div>
 
-      <pre class="field-report">${report}</pre>
+      <pre class="field-report">${escapeHTML(report)}</pre>
 
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
-        <button class="btn" data-action="retry-seed" data-seed="${currentSeed}"
+        <button class="btn" data-action="retry-seed" data-seed="${escapeAttr(currentSeed)}"
           style="flex:1;min-width:130px;font-size:0.95em;">
-          Retry Seed ${currentSeed}
+          Retry Seed ${escapeHTML(currentSeed)}
         </button>
         <button class="btn" data-action="new-seed"
           style="flex:1;min-width:130px;font-size:0.95em;background:transparent;
@@ -364,7 +365,7 @@ function showDayResultBanner(prevHealth, newHealth, dayCount) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function newGame(seed) {
-  showOverlay(`<div class="panel card"><h1>Generating World…</h1><p>Seed: ${seed}</p></div>`);
+  showOverlay(`<div class="panel card"><h1>Generating World…</h1><p>Seed: ${escapeHTML(seed)}</p></div>`);
   await new Promise(r => setTimeout(r, 50));
 
   try {
@@ -388,7 +389,7 @@ async function newGame(seed) {
     showOverlay(`
       <div class="panel card">
         <h1 style="color:var(--danger)">Generation Failed</h1>
-        <p>${err.message}</p>
+        <p>${escapeHTML(err.message)}</p>
         <button class="btn" data-action="retry">Retry</button>
       </div>
     `);

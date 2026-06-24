@@ -13,6 +13,7 @@
  */
 
 import { getAICodexEntry } from './ai_content.js';
+import { escapeHTML } from './safehtml.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Kind → display label + colour
@@ -42,7 +43,7 @@ function nodeCardHTML(node, state) {
 
   const codex  = getAICodexEntry(node.id);
   const codexHTML = codex
-    ? `<p class="nb-codex">"${codex}"</p>`
+    ? `<p class="nb-codex">"${escapeHTML(codex)}"</p>`
     : '';
 
   const keystoneMark = node.keystone
@@ -60,11 +61,11 @@ function nodeCardHTML(node, state) {
     <div class="nb-node-card">
       <div class="nb-node-header">
         <span class="nb-kind-badge" style="background:${badge.color}20;color:${badge.color};border-color:${badge.color}40;">
-          ${badge.label}
+          ${escapeHTML(badge.label)}
         </span>
-        <strong class="nb-node-name">${node.name}</strong>
+        <strong class="nb-node-name">${escapeHTML(node.name)}</strong>
         ${keystoneMark}
-        <span class="nb-status" style="color:${sColor}">● ${node.status.toUpperCase()}</span>
+        <span class="nb-status" style="color:${sColor}">● ${escapeHTML(String(node.status).toUpperCase())}</span>
       </div>
       ${popBar}
       ${codexHTML}
@@ -89,9 +90,9 @@ function edgesHTML(state) {
     const betaStr  = e.beta > 0 ? `β=${e.beta.toFixed(3)}` : 'impact edge';
     return `
       <div class="nb-edge-row">
-        <span class="nb-edge-from">${fromName}</span>
+        <span class="nb-edge-from">${escapeHTML(fromName)}</span>
         <span class="nb-edge-arrow">→</span>
-        <span class="nb-edge-to">${toName}</span>
+        <span class="nb-edge-to">${escapeHTML(toName)}</span>
         <span class="nb-edge-beta">${betaStr}</span>
       </div>
     `;

@@ -27,14 +27,14 @@
 // Balance knobs (Rule 02-C footnote — harness is source of truth)
 // ─────────────────────────────────────────────────────────────────────────────
 const FOOD_SUFFICIENCY = 0.4;   // θ — food at ≥θ of pristine capacity fully sustains consumer
-const STARVE_RATE      = 0.3;   // fraction of population lost per day when food→0
+const STARVE_RATE      = 0.18;  // fraction of population lost per day when food→0 (re-tune §2: 0.30→0.18 to allow staggered recovery)
 const MAX_DELTA_FRAC   = 0.35;  // ±35 % stability clamp on daily population change
-const DAILY_INCOME     = 60;    // resources credited each day (balance pass: 55→60)
+const DAILY_INCOME     = 65;    // resources credited each day (re-tune: 60→65 for dual-stressor pacing)
 
 // ── Typed-stressor knobs ──────────────────────────────────────────────────────
 export const RUNOFF_SPREAD   = 4;    // L added to each orthogonal neighbour per day
 export const HARVEST_DRAIN   = 6;    // default daily population drain (overharvest)
-export const CULL_FRAC       = 0.45; // fraction of invasive population removed per cull (balance pass: 0.30→0.40→0.45)
+export const CULL_FRAC       = 0.45; // fraction of invasive population removed per cull
 export const PROTECT_CAP     = 20;   // max stressor on a protected tile
 export const BIOREM_AMOUNT   = 50;   // L reduction per bioremediation application
 
@@ -183,16 +183,10 @@ export function computeHealth(state) {
     : 0;
   const stressorLoadPenalty = 0.10 * meanStressor;
 
-  // Additional penalty for active invasive: scale by its relative population
+  // Invasive health impact comes from ecological suppression of natives (β),
+  // not a flat artificial penalty. Penalty set to 0 — let β do the work.
   let invasivePenalty = 0;
-  for (const s of (state.world.activeStressors ?? [])) {
-    if (s.type === 'invasive') {
-      const inv = state.world.nodes[s.nodeId];
-      if (inv && inv.status !== 'extinct' && inv.K_max > 0) {
-        invasivePenalty += 2 * Math.min(1, inv.population / inv.K_max);
-      }
-    }
-  }
+  // (Re-tune §3: removed flat invasive penalty; β = [0.025,0.050] drives real suppression)
 
   // Overharvest: adds a fixed small penalty proportional to drain / target K_max
   let harvestPenalty = 0;

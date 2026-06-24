@@ -21,7 +21,7 @@
         "name": "Seagrass",
         "keystone": true,
         "bands": {
-          "r":     [0.12, 0.18],
+          "r":     [0.20, 0.28],
           "K_max": [400,  600],
           "alpha": [0.7,  1.0],
           "weight": [2,    3]
@@ -33,7 +33,7 @@
         "name": "Mangrove Shrimp",
         "keystone": false,
         "bands": {
-          "r":     [0.10, 0.16],
+          "r":     [0.17, 0.24],
           "K_max": [250,  400],
           "alpha": [1.2,  1.8],
           "weight": [1,   1.5]
@@ -45,7 +45,7 @@
         "name": "Painted Stork",
         "keystone": true,
         "bands": {
-          "r":     [0.05, 0.09],
+          "r":     [0.09, 0.15],
           "K_max": [60,   120],
           "alpha": [2.0,  2.6],
           "weight": [3,    4]
@@ -60,8 +60,8 @@
     ],
 
     "start": {
-      "stressor":       [40, 60],
-      "populationFrac": [0.35, 0.55]
+      "stressor":       [45, 65],
+      "populationFrac": [0.30, 0.50]
     },
 
     "_comment_stressorPool": "Seed-selected typed stressors. generator.js picks 1 (60%) or 2 (40%) distinct types per world. Each entry defines the per-type instantiation bands.",
@@ -69,20 +69,20 @@
       {
         "type": "runoff",
         "_comment": "Nutrient-pollution source tile. Propagates +RUNOFF_SPREAD to neighbours each day. Counter: bioremediation on source tile (L→0 stops spread).",
-        "sourceLBand":  [45, 70],
-        "spreadRate":   [3,  6]
+        "sourceLBand":  [60, 95],
+        "spreadRate":   [3,  7]
       },
       {
         "type": "invasive",
-        "_comment": "Introduced competitor/predator node (n_invasive). Preys on / competes with a target native. Low r and very low beta so suppression is slow — human-fair. Counter: cull(nodeId).",
+        "_comment": "Introduced competitor/predator node (n_invasive). Preys on target native with meaningful beta — unmanaged invasive visibly drives target down ~20-35% over 10 days; player who culls keeps native alive. Counter: cull(nodeId).",
         "targetNative": "n_shrimp",
         "bands": {
-          "r":      [0.07, 0.12],
-          "K_max":  [120,  200],
+          "r":      [0.10, 0.16],
+          "K_max":  [80,   140],
           "alpha":  [0.7,  1.0],
           "weight": [0,    0]
         },
-        "betaBand": [0.008, 0.018],
+        "betaBand": [0.020, 0.035],
         "populationFrac": [0.15, 0.25]
       },
       {

@@ -23,11 +23,11 @@ import { runDailyStep } from './ecosystem.js';
 // Balance knobs — must mirror ecosystem.js / balance-harness.js
 const BIOREMEDIATION_COST = 60;
 const BIOREM_L_REDUCTION  = 50;
-const CULL_COST           = 55;   // matches rebalancing slot price (balance pass: 90→55)
-const PROTECT_COST        = 150;  // matches stabilization slot price
+const CULL_COST           = 45;   // matches rebalancing slot price (re-tune: 55→45)
+const PROTECT_COST        = 120;  // matches stabilization slot price (re-tune: 150→120)
 const PROTECT_CAP         = 20;
 const START_RESOURCES     = 100;
-const COLLAPSE_TIMER      = 40;
+const COLLAPSE_TIMER      = 45;  // re-tune §1: uniform 45 for all worlds
 
 /**
  * validateWorld(world) → { ok, reason }
@@ -117,9 +117,8 @@ function checkAcyclic(world) {
  * When 2 stressors are active the greedy player addresses BOTH each day.
  */
 function checkSolvable(world) {
-  // Match generator.js: invasive worlds get +10 days on the collapse timer.
-  const hasInvasiveStressor = (world.activeStressors ?? []).some(s => s.type === 'invasive');
-  const effectiveTimer = COLLAPSE_TIMER + (hasInvasiveStressor ? 30 : 0);
+  // Uniform collapse_timer for all worlds — no per-stressor special-casing.
+  const effectiveTimer = COLLAPSE_TIMER;
 
   const mockState = {
     meta: {
@@ -158,7 +157,7 @@ function checkSolvable(world) {
   const invasiveDef    = activeStressors.find(s => s.type === 'invasive');
   const harvestDef     = activeStressors.find(s => s.type === 'overharvest');
 
-  const maxDays = effectiveTimer;
+  const maxDays = COLLAPSE_TIMER;
 
   for (let day = 0; day < maxDays; day++) {
     const res = mockState.player.resources;

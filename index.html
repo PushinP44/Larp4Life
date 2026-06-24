@@ -3,6 +3,31 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!--
+    Security hardening (PENTEST F1). Strict CSP — the app uses one external ES
+    module and zero inline scripts / on* handlers (events via data-action
+    delegation), so script-src 'self' blocks every injected inline-script and
+    onerror payload (backstops the F2 DOM-XSS sinks). 'unsafe-inline' is needed
+    ONLY for style attributes — it does NOT permit script execution.
+    NOTE: frame-ancestors / X-Frame-Options / X-Content-Type-Options must be set
+    as real response headers (ignored in <meta>) — see security/deploy-headers.md.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data:;
+    media-src 'self';
+    connect-src 'self';
+    font-src 'self';
+    object-src 'none';
+    base-uri 'none';
+    form-action 'none';
+    frame-ancestors 'none';
+  " />
+  <meta name="referrer" content="no-referrer" />
+
   <title>Ecosystem X: The Last Balance</title>
   <link rel="stylesheet" href="style.css" />
 </head>

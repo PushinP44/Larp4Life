@@ -4,10 +4,10 @@
  * Interventions (Rule 02-F verbatim):
  *   Bioremediation  base ¤60  → reduce stressor L on the PLAYER'S CURRENT TILE by 50
  *                                (deductive core: player must navigate to the right tile)
- *   Rebalancing     base ¤55  → reintroduce a native species (P→20% K_max) if any node
+ *   Rebalancing     base ¤45  → reintroduce a native species (P→20% K_max) if any node
  *                                has L<20 AND P<20; OR cull an invasive (no keystone with
  *                                P>K_max*0.8) to cut its pop by 45%
- *   Stabilization   base ¤150 → PROTECT the player's current tile (tile.protected=true,
+ *   Stabilization   base ¤120 → PROTECT the player's current tile (tile.protected=true,
  *                                stressor growth frozen) AND raise its effective K by
  *                                capping its stressor at 20 for the next step calculation
  *

@@ -207,18 +207,9 @@ function buildWorld(template, seed) {
 
   // 3b. Stamp node tiles — seeded stressor levels drawn from start.stressor band.
   // Iteration follows the same sorted nodeIds order so RNG consumption is deterministic.
-  // When an invasive stressor is active (without runoff), native tiles start with lower
-  // background stressor so the ecosystem has room to recover post-cull.
+  // ALL worlds use the same stressor band — no per-stressor generation special-casing.
   const [lo, hi] = template.start.stressor;
   const midpoint = (lo + hi) / 2;
-  const hasInvasiveStressor = activeStressors.some(s => s.type === 'invasive');
-  const hasRunoffStressor   = activeStressors.some(s => s.type === 'runoff');
-  // If invasive stressor is active, native tiles start with lower background stressor
-  // so K_eff stays reasonable while the player focuses resources on culling.
-  // Runoff combo: also reduced (player must address two stressors; a cleaner baseline
-  // keeps the fight manageable).
-  const nativeLo = hasInvasiveStressor ? lo * 0.4 : lo;
-  const nativeHi = hasInvasiveStressor ? lo * 0.7 : hi;
 
   for (const nid of nodeIds) {
     const tdef   = template.nodes.find(n => n.id === nid);
@@ -228,7 +219,7 @@ function buildWorld(template, seed) {
 
     const L = isStressor
       ? randFloat(rng, midpoint, hi)
-      : randFloat(rng, nativeLo, nativeHi);
+      : randFloat(rng, lo, hi);
 
     tiles[tileId] = {
       id:        tileId,
@@ -404,14 +395,8 @@ export function generateWorld(template, seed, state) {
       state.meta.seed              = currentSeed;         // written ONCE — Rule 03 §7
       state.meta.biome_template    = template.id ?? 'coastal_wetland';
 
-      // Invasive worlds need extra time: the invasive damages natives before it can
-      // be controlled, so post-cull ecosystem recovery takes longer than pure runoff/
-      // overharvest worlds. Grant +10 days on the collapse timer when an invasive
-      // stressor is active (spec §3 last-resort option — minimal change).
-      const hasInvasive = world.activeStressors.some(s => s.type === 'invasive');
-      if (hasInvasive) {
-        state.meta.collapse_timer = (state.meta.collapse_timer ?? 40) + 30;
-      }
+      // Uniform collapse_timer for all worlds — no per-stressor special-casing.
+      // (Re-tune §1: remove invasive +30 timer bonus.)
 
       state.save();
       return; // success

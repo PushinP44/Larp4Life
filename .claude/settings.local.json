@@ -28,7 +28,10 @@
       "Bash(sips -g pixelWidth -g pixelHeight -g hasAlpha assets/images/player.png)",
       "Bash(node --check input.js)",
       "Bash(mkdir -p proposal)",
-      "Bash(rm -rf /tmp/_hr /tmp/_gs)"
+      "Bash(rm -rf /tmp/_hr /tmp/_gs)",
+      "Bash(node --check integrity.js)",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node --check state.js)"
     ]
   }
 }
