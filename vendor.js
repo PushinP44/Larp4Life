@@ -51,6 +51,7 @@ export function applyIntervention(type, state) {
 
   // ── Apply effect (Rule 02-F) ──────────────────────────────────────────────
   let effectMessage = '';
+  let wrongToolWarn = '';   // set when the spend doesn't address a real cause
 
   switch (type) {
 
@@ -68,6 +69,7 @@ export function applyIntervention(type, state) {
       const before = tile.stressor ?? 0;
       tile.stressor = Math.max(0, before - 50); // re-tuned 40→50 for humane margin
       effectMessage = `Tile (${state.player.tile_x},${state.player.tile_y}): stressor ${Math.round(before)} → ${Math.round(tile.stressor)}.`;
+      if (before < 10) wrongToolWarn = '⚠ That tile was already clean — bioremediation had little effect. Check the diagnosis for the real source.';
       break;
     }
 
@@ -105,7 +107,8 @@ export function applyIntervention(type, state) {
         if (cullTarget) {
           const before = cullTarget.population;
           cullTarget.population = Math.max(0, Math.round(before * 0.55)); // cull 45%
-          effectMessage = `${cullTarget.name}: invasive culled ${before} → ${cullTarget.population} (−45%).`;
+          effectMessage = `${cullTarget.name}: culled ${before} → ${cullTarget.population} (−45%).`;
+          if (cullTarget.kind !== 'invasive') wrongToolWarn = `⚠ ${cullTarget.name} is a native species, not an invasive — culling it harmed the web.`;
         } else {
           // Neither condition applies — refund and report
           state.player.resources += cost;
@@ -136,6 +139,9 @@ export function applyIntervention(type, state) {
       // Cap stressor at 20 to raise effective K (Rule 02-F stabilization effect)
       tile.stressor = Math.min(tile.stressor ?? 0, 20);
       effectMessage = `Tile (${state.player.tile_x},${state.player.tile_y}) stabilized. Effective stressor capped at 20.`;
+      const overharvestHere = (state.world.activeStressors ?? []).some(s =>
+        s.type === 'overharvest' && state.world.nodes[s.targetNative]?.tileId === tileId);
+      if (!overharvestHere) wrongToolWarn = '⚠ Nothing is being overharvested on this tile — protection had little effect.';
       break;
     }
 
@@ -143,13 +149,15 @@ export function applyIntervention(type, state) {
       return { ok: false, message: `Unknown intervention type: ${type}`, cost: 0 };
   }
 
+  if (wrongToolWarn) effectMessage += `\n\n${wrongToolWarn}`;
+
   state.save();
 
   const tier      = state.meta.market_tier;
   const flavour   = getInterventionDialogue(type, tier);
   const message   = `${flavour}\n\n${effectMessage}`;
 
-  return { ok: true, message, cost };
+  return { ok: true, message, cost, warned: !!wrongToolWarn };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

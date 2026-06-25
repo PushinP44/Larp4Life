@@ -99,7 +99,7 @@ function pickStressors(template, rng, nodeTiles, w, h, usedTiles) {
 
         extraNodes['n_invasive'] = {
           id:                 'n_invasive',
-          name:               'Invasive Species',
+          name:               'Mozambique Tilapia',
           kind:               'invasive',
           keystone:           false,
           tileId,

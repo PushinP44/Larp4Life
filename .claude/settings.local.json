@@ -31,7 +31,8 @@
       "Bash(rm -rf /tmp/_hr /tmp/_gs)",
       "Bash(node --check integrity.js)",
       "Bash(node --input-type=module -e ' *)",
-      "Bash(node --check state.js)"
+      "Bash(node --check state.js)",
+      "Bash(node -e \"const c=require\\('./data/codex.json'\\); console.log\\(Object.keys\\(c\\)\\); console.log\\('sample n_shrimp:', JSON.stringify\\(c.n_shrimp||c['n_shrimp']\\)?.slice\\(0,80\\)\\)\")"
     ]
   }
 }

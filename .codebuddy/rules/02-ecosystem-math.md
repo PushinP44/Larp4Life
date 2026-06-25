@@ -63,7 +63,7 @@ predation_i   = Σ_k [ β_ik · min(P_k, P_i) ]                      // k = i's 
 
 ```javascript
 const FOOD_SUFFICIENCY = 0.4;   // θ
-const STARVE_RATE      = 0.3;
+const STARVE_RATE      = 0.18;  // re-tune §2: 0.30→0.18 (faster native recovery); see §F
 const MAX_DELTA_FRAC   = 0.35;
 
 function stepPopulation(nodeId, state) {
@@ -157,33 +157,40 @@ Each world has 1 (≈60%) or 2 (≈40%) stressor types selected at generation ti
 | Stressor | Correct counter | Effect | Cost |
 |----------|----------------|--------|------|
 | runoff | `applyBioremediation(tileId)` | L -= BIOREM_AMOUNT (=50), clamp 0. Root fix: clean source tile to L<10. | ¤60 |
-| invasive | `applyCull(nodeId)` | population -= ceil(CULL_FRAC × P). CULL_FRAC = 0.45. | ¤55 |
-| overharvest | `applyProtect(tileId)` | tile.protected = true; L capped at PROTECT_CAP (=20); harvest drain zeroed. | ¤150 |
+| invasive | `applyCull(nodeId)` | population -= ceil(CULL_FRAC × P). CULL_FRAC = 0.45. | ¤45 |
+| overharvest | `applyProtect(tileId)` | tile.protected = true; L capped at PROTECT_CAP (=20); harvest drain zeroed. | ¤120 |
 
 **Wrong-counter rule:** mismatched tools still spend resources but have no useful effect (applying bioremediation in an invasive world reduces L but not the invasive — resources wasted). This is intentional — the mechanic teaches diagnosis.
 
-### Balance knobs (harness-verified, 1000-seed sweep — balance pass 2)
+### Balance knobs (harness-verified, 1000-seed sweep — balance pass 3: root-cause re-tune)
 ```
 RUNOFF_SPREAD = 4       BIOREM_AMOUNT = 50
-HARVEST_DRAIN = 6*      CULL_FRAC     = 0.45     (* drainBand now [3,6], was [4,9])
-PROTECT_CAP   = 20      DAILY_INCOME  = 60        (was 55)
+HARVEST_DRAIN = 6       CULL_FRAC     = 0.45
+PROTECT_CAP   = 20      DAILY_INCOME  = 65
+STARVE_RATE   = 0.18    (re-tune §2: 0.30→0.18 — faster staggered native recovery)
 
-Rebalancing (cull) cost: ¤55  (was ¤90 → ¤70 → ¤55)
-Bioremediation cost:     ¤60  (unchanged)
-Stabilization cost:      ¤150 (unchanged)
+Intervention costs:  bioremediation ¤60 · rebalancing/cull ¤45 · stabilization/protect ¤120
 
-Invasive collapse-timer bonus: +30 days on top of base 40
-  → invasive-only worlds: timer = 70
-  → invasive+runoff worlds: timer = 70
-  → invasive+overharvest worlds: timer = 70
-  → non-invasive worlds: timer = 40 (unchanged)
+Collapse timer: UNIFORM 45 days for ALL worlds.
+  Re-tune §1 REMOVED both invasive special-cases (the +30-day timer bonus AND the
+  reduced native-tile-stressor). The real fix was faster NATIVE RECOVERY, not
+  per-stressor band-aids — so invasive worlds now play on the same clock as the rest.
 
-Invasive parameter bands (biomes.json stressorPool):
-  r: [0.07, 0.12]   K_max: [120, 200]   alpha: [0.7, 1.0]
-  betaBand: [0.008, 0.018]   populationFrac: [0.15, 0.25]
+Native recovery (biomes.json node r-bands, raised ~1.6× — re-tune §2):
+  producer (seagrass) r:[0.20,0.28] · consumer (shrimp) r:[0.17,0.24] · predator (heron) r:[0.09,0.15]
 
-Native tile stressor in invasive worlds: L ∈ [lo×0.4, lo×0.7]
-  (lower initial stressor so K_eff stays meaningful while player culls)
+Stressor parameter bands (biomes.json stressorPool):
+  runoff:      sourceLBand [60,95]   spreadRate [3,7]
+  invasive:    βBand [0.02,0.035]   r [0.10,0.16]   K_max [80,140]   alpha [0.7,1.0]
+               populationFrac [0.15,0.25]   → target n_shrimp
+               (re-tune §3: β restored from the hollow [0.008,0.018] — unmanaged it
+                now drives the target native down ~37% in 12 days: a REAL threat.)
+  overharvest: drainBand [3,6]   protectCapStressor 20   → target n_shrimp
+  start.stressor (ALL worlds): [45,65]
+
+Verified (balance pass 3): 100% optimal-winnable, deterministic, 0 NaN, 0 Δ-violations,
+  all combo medians in [0.30–0.65]×45, pacing ratio 1.50, and a HANDICAPPED player
+  (3-day diagnosis lag + misplay every 4th action) wins 100% across every combo.
 ```
 
 ### Updated full daily-step order (ecosystem.js → runDailyStep)
@@ -200,7 +207,7 @@ h.     state.resetDay(); state.save()
 ```
 
 ### computeHealth additions (Phase 2)
-- **Invasive penalty**: `+5 × clamp(P_invasive / K_max_invasive, 0, 1)` subtracted from H while the invasive is alive.
+- **Invasive penalty**: REMOVED — set to 0 (re-tune §3). The invasive now harms H *ecologically* via real predation (β [0.02,0.035]) suppressing its target native, **not** via an artificial flat penalty.
 - **Overharvest penalty**: `+3 × (harvestDrain / K_max_target) × 100` subtracted from H while the target tile is **not** protected.
 - Invasive nodes (`kind = 'invasive'`) are **excluded** from the weighted population sum (weight = 0).
 

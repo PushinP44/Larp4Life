@@ -552,8 +552,12 @@ overlay.addEventListener('click', async (e) => {
       if (result.ok) {
         // Refresh vendor panel with updated state
         showOverlay(buildVendorHTML(GameState));
-        // Show result dialogue as a toast
-        showToast(result.message.split('\n')[0], 'success', 4000);
+        // Show result as a toast — surface the wrong-tool warning prominently
+        if (result.warned) {
+          showToast(result.message.split('\n').filter(Boolean).pop(), 'warning', 5200);
+        } else {
+          showToast(result.message.split('\n')[0], 'success', 4000);
+        }
 
         // ── C: Intervention juice (bioremediation only) ────────────────
         if (type === 'bioremediation') {

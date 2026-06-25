@@ -417,6 +417,12 @@ export function applyProtect(tileId, state) {
  *   h. state.resetDay() + state.save()
  */
 export function runDailyStep(state) {
+  // ── PRE-0. Record start-of-day population for UI trend arrows (▲/▼). ───────
+  // Derived/recorded only — does not affect the simulation math or determinism.
+  for (const n of Object.values(state.world.nodes)) {
+    n.prev_population = n.population;
+  }
+
   // ── PRE-0. Typed stressor effects (before population step) ────────────────
   processStressors(state);
 

@@ -4,8 +4,8 @@
     {
       "name": "ecox",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8155"],
-      "port": 8155
+      "runtimeArgs": ["-m", "http.server", "8159"],
+      "port": 8159
     }
   ]
 }
