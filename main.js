@@ -171,6 +171,13 @@ function toggleVendor() {
 
 const _TIER_ORDER = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
 
+/** _stepOneDay() — the raw simulation step, no feedback. Shared by advanceDay
+ *  (single turn) and advanceUntilEvent (batch). Keeps one step code path. */
+function _stepOneDay() {
+  runDailyStep(GameState);
+  updateTier(GameState); // sync price factor to the new tier
+}
+
 /**
  * advanceDay() — run one simulation step and play all the resulting feedback
  * (day banner, ambient crossfade, tier-up juice, win sting, scanner recharge,
@@ -181,17 +188,18 @@ function advanceDay() {
     hideOverlay();
     return;
   }
-  const prevHealth = GameState.meta.ecosystem_health;
-  const prevTier   = GameState.meta.market_tier;
+  const prevHealth    = GameState.meta.ecosystem_health;
+  const prevTier      = GameState.meta.market_tier;
+  const prevResources = GameState.player.resources;
 
   if (!overlay.hidden) hideOverlay();
 
-  runDailyStep(GameState);
-  updateTier(GameState); // sync price factor to the new tier
+  _stepOneDay();
 
   const newHealth = GameState.meta.ecosystem_health;
   const newTier   = GameState.meta.market_tier;
-  showDayResultBanner(prevHealth, newHealth, GameState.meta.day_count);
+  showDayResultBanner(prevHealth, newHealth, GameState.meta.day_count,
+    GameState.player.resources - prevResources, GameState.meta.collapse_timer);
 
   // Crossfade ambient audio to match new health tier
   setHealthAudio(newHealth);
@@ -212,6 +220,84 @@ function advanceDay() {
     setTimeout(() => showToast(`⚡ Scanner recharged — ${SCANNER_CHARGES} new scouting charges.`, 'success', 2500), 800);
   }
 
+  setTimeout(checkEndCondition, 400);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// advanceUntilEvent() — pacing (#2a): batch-run days so the player isn't
+// click-spamming "End Day" to save up. Stops at the first meaningful change:
+//   • win / lose
+//   • the top recommended fix becomes affordable (was not, now is)
+//   • the health TIER changes
+//   • a species becomes endangered or goes extinct
+// Then plays ONE summary + says why it stopped. No balance constants change.
+// ─────────────────────────────────────────────────────────────────────────────
+const _MAX_BATCH_DAYS = 30; // safety cap so a stalled run can't loop forever
+
+/** Snapshot of the signals we watch, so we can detect a change after a step. */
+function _eventSnapshot() {
+  const rec = getTopRecommendation(GameState);
+  const affordable = rec ? GameState.player.resources >= rec.cost : false;
+  const statuses = {};
+  for (const n of Object.values(GameState.world.nodes)) statuses[n.id] = n.status;
+  return { tier: GameState.meta.market_tier, affordable, statuses };
+}
+
+/** Returns a human reason string if `now` differs meaningfully from `before`, else null. */
+function _eventReason(before, now) {
+  if (GameState.flags.win)  return 'the biome is restored';
+  if (GameState.flags.lose) return 'the biome collapsed';
+  if (!before.affordable && now.affordable) return 'you can now afford the recommended fix';
+  if (before.tier !== now.tier) return `the ecosystem is now ${now.tier}`;
+  for (const id of Object.keys(now.statuses)) {
+    const was = before.statuses[id], is = now.statuses[id];
+    if (was === is) continue;
+    if (is === 'extinct')    return `${GameState.world.nodes[id]?.name ?? 'a species'} went extinct`;
+    if (is === 'endangered') return `${GameState.world.nodes[id]?.name ?? 'a species'} became endangered`;
+  }
+  return null;
+}
+
+function advanceUntilEvent() {
+  if (GameState.flags.win || GameState.flags.lose) { hideOverlay(); return; }
+  if (!overlay.hidden) hideOverlay();
+
+  const startHealth    = GameState.meta.ecosystem_health;
+  const startResources = GameState.player.resources;
+  const prevTier       = GameState.meta.market_tier;
+  const before = _eventSnapshot();
+
+  let days = 0;
+  let reason = null;
+  while (days < _MAX_BATCH_DAYS) {
+    _stepOneDay();
+    days++;
+    reason = _eventReason(before, _eventSnapshot());
+    if (reason) break;
+    if (GameState.flags.win || GameState.flags.lose) break;
+  }
+  if (!reason) reason = `advanced ${days} day${days !== 1 ? 's' : ''}`;
+
+  const newHealth = GameState.meta.ecosystem_health;
+  const newTier   = GameState.meta.market_tier;
+
+  // One summary banner covering the whole batch.
+  const dH   = Math.round(newHealth - startHealth);
+  const dRes = GameState.player.resources - startResources;
+  showToast(
+    `⏩ ${days} day${days !== 1 ? 's' : ''} → Day ${GameState.meta.day_count}  ·  ` +
+    `Health ${Math.round(startHealth)}→${Math.round(newHealth)}% (${dH >= 0 ? '+' : ''}${dH}%)  ·  ` +
+    `${dRes >= 0 ? '+' : ''}¤${dRes}  ·  T-${GameState.meta.collapse_timer}\nStopped: ${reason}.`,
+    newHealth >= startHealth ? 'success' : 'warning', 5000);
+
+  setHealthAudio(newHealth);
+  if ((_TIER_ORDER[newTier] ?? 0) > (_TIER_ORDER[prevTier] ?? 0)) { playTierUp(); flashCanvas(300); }
+  if (GameState.flags.win) playWinSting();
+
+  if (GameState.player.scanner_charges === 0) {
+    GameState.player.scanner_charges = SCANNER_CHARGES;
+    GameState.save();
+  }
   setTimeout(checkEndCondition, 400);
 }
 
@@ -401,31 +487,31 @@ function computeNextGuidance(state) {
         // No button — movement is the player's job
       };
     } else {
-      // Cannot afford
+      // Cannot afford — offer to skip straight to when you can (no click-grind).
       return {
         icon: '⏳',
-        text: `Need ¤${rec.cost} (have ¤${resources}). Advance a day to gather resources.`,
-        action: { label: 'Advance Day', do: 'endday' },
+        text: `Need ¤${rec.cost} (have ¤${resources}). Skip ahead to earn it.`,
+        action: { label: '⏩ Skip to afford', do: 'advance-until' },
       };
     }
   }
 
-  // e. No pending cause but health is moving
+  // e. No pending cause but health is moving — fast-forward to the next change.
   const health = state.meta.ecosystem_health ?? 0;
   if (health < 75) {
     return {
       icon: '📈',
-      text: 'Recovering — Advance the Day.',
-      action: { label: 'Advance Day', do: 'endday' },
+      text: 'Recovering — fast-forward to the next change.',
+      action: { label: '⏩ Fast-forward', do: 'advance-until' },
     };
   }
 
-  // f. Pristine hold
+  // f. Pristine hold — the final days matter, so step one at a time.
   const daysToWin = Math.max(0, 3 - (state.meta.health_streak ?? 0));
   return {
     icon: '🏁',
     text: `Hold Pristine — ${daysToWin} day${daysToWin !== 1 ? 's' : ''} to win.`,
-    action: { label: 'Advance Day', do: 'endday' },
+    action: { label: '▸ End Day', do: 'endday' },
   };
 }
 
@@ -521,6 +607,12 @@ document.addEventListener('click', async (e) => {
       break;
     }
 
+    case 'advance-until': {
+      _unlockAudio();
+      advanceUntilEvent();
+      break;
+    }
+
     case 'new-seed': {
       _unlockAudio();
       const freshSeed = Math.max(1, Date.now() % 999999 || 1);
@@ -553,7 +645,7 @@ function showStartCard() {
           <input id="seed-input" type="number" min="1" max="999999" value="${defaultSeed}">
         </div>
         <button class="start-begin-btn" data-action="newgame">Begin</button>
-        <p class="start-controls-hint">Move: WASD / arrows / click · Walk near wildlife to scan it</p>
+        <p class="start-controls-hint">Move: WASD / arrows / click · Walk near wildlife to scan it<br>Space: end a day · F: fast-forward to the next change · N: notes · V: store</p>
       </div>
     </div>
   `);
@@ -660,15 +752,29 @@ function showLoseCard() {
 // Daily step feedback overlay (results panel shown briefly after endday)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function showDayResultBanner(prevHealth, newHealth, dayCount) {
+/** True after the first day-advance explainer has been shown this session. */
+let _dayAdvanceExplained = false;
+
+function showDayResultBanner(prevHealth, newHealth, dayCount, resourceDelta = 0, newTimer = null) {
   const delta = newHealth - prevHealth;
   const sign  = delta >= 0 ? '+' : '';
-  const color = delta >= 0 ? '#4ccea0' : '#c0392b';
-  showToast(
-    `Day ${dayCount}: Health ${Math.round(prevHealth)}% → ${Math.round(newHealth)}% (${sign}${Math.round(delta)}%)`,
-    delta >= 0 ? 'success' : 'warning',
-    3500
-  );
+  // Teach what a day actually does: species react (health moves), you earn
+  // resources, and the collapse timer ticks down.
+  const parts = [
+    `Day ${dayCount}`,
+    `Health ${Math.round(prevHealth)}→${Math.round(newHealth)}% (${sign}${Math.round(delta)}%)`,
+  ];
+  if (resourceDelta) parts.push(`${resourceDelta >= 0 ? '+' : ''}¤${resourceDelta}`);
+  if (newTimer !== null) parts.push(`T-${newTimer}`);
+  let msg = parts.join('  ·  ');
+
+  let duration = 3500;
+  if (!_dayAdvanceExplained) {
+    _dayAdvanceExplained = true;
+    msg += `\nEnding a day lets species react, pays you ¤ to spend, and ticks the collapse timer. Spend ¤ on the right fix.`;
+    duration = 6500;
+  }
+  showToast(msg, delta >= 0 ? 'success' : 'warning', duration);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -973,6 +1079,11 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       // Space = end day (quick play) — only from the game view, not over a panel
       if (overlay.hidden) advanceDay();
+      break;
+    case 'f': case 'F':
+      e.preventDefault();
+      // F = fast-forward: batch-advance until something meaningful changes
+      if (overlay.hidden) advanceUntilEvent();
       break;
     case 'Escape':
       if (!overlay.hidden) hideOverlay();

@@ -224,7 +224,7 @@ export function buildVendorHTML(state) {
 
       <div class="vendor-footer">
         <button class="btn btn-secondary" data-action="open-notebook">📓 Field Notebook</button>
-        <button class="btn btn-secondary" data-action="endday">⏭ Advance Day</button>
+        <button class="btn btn-secondary" data-action="endday">▸ End Day</button>
       </div>
     </div>
   `;

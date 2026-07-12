@@ -74,7 +74,10 @@ const server = createServer(async (req, res) => {
     const data = await readFile(filePath);
     send(res, 200, data, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
+      // Dev server: never cache. `no-cache` alone still let some browsers serve
+      // stale ES modules (no ETag/Last-Modified here to revalidate against), so a
+      // source edit wouldn't show on reload. `no-store` guarantees fresh modules.
+      'Cache-Control': 'no-store, max-age=0',
     });
   } catch (err) {
     send(res, 500, `Server error: ${err.message}`);

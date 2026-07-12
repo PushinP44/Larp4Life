@@ -77,7 +77,7 @@ function nodeCardHTML(node, state) {
     <div class="nb-bar-track">
       <div class="nb-bar-fill" style="width:${relPop}%;background:${badge.color}"></div>
     </div>
-    <span class="nb-pop-label">${node.population} / ${Math.round(node.K_max)} (${relPop}%) ${trendArrowHTML(node)}</span>
+    <span class="nb-pop-label">Abundance ${relPop}% ${trendArrowHTML(node)}</span>
   `;
 
   return `
@@ -110,13 +110,16 @@ function edgesHTML(state) {
     const toNode   = state.world.nodes[e.to];
     const fromName = fromNode?.name ?? e.from;
     const toName   = toNode?.name   ?? e.to;
-    const betaStr  = e.beta > 0 ? `β=${e.beta.toFixed(3)}` : 'impact edge';
+    // Plain-language relationship — the raw β weight is sim-internal noise for
+    // the player. Positive β = a feeding link (prey → predator); otherwise the
+    // source pressures the target (e.g. an invasive suppressing a native).
+    const relWord  = e.beta > 0 ? 'feeds' : 'pressures';
     return `
       <div class="nb-edge-row">
         <span class="nb-edge-from">${escapeHTML(fromName)}</span>
+        <span class="nb-edge-rel">${relWord}</span>
         <span class="nb-edge-arrow">→</span>
         <span class="nb-edge-to">${escapeHTML(toName)}</span>
-        <span class="nb-edge-beta">${betaStr}</span>
       </div>
     `;
   }).join('');
@@ -323,6 +326,24 @@ function buildDiagnosisHTML(state) {
     </section>`;
 }
 
+/**
+ * _nextStepHTML(state) — single-glance "do this next" line at the top of the
+ * notebook. Reuses getTopRecommendation so it never disagrees with the coach.
+ * A trial-&-error player can act on just this line without reading the rest.
+ */
+function _nextStepHTML(state) {
+  const rec = getTopRecommendation(state);
+  if (!rec) {
+    return `<div class="nb-next nb-next-scan">🔍 <strong>Do this next:</strong> explore and scan to find what's harming the ecosystem.</div>`;
+  }
+  const verb = {
+    bioremediation: 'Bioremediate the polluted tile',
+    rebalancing:    'Rebalance the food web (cull the invasive / reintroduce a native)',
+    stabilization:  "Stabilize the depleted species' tile",
+  }[rec.toolType] ?? rec.toolType;
+  return `<div class="nb-next">⚡ <strong>Do this next:</strong> ${escapeHTML(verb)} to fix <strong>${escapeHTML(rec.cause)}</strong> <span class="nb-next-cost">¤${rec.cost}</span></div>`;
+}
+
 export function buildNotebookHTML(state) {
   const discoveredNodes = state.notebook.discovered_nodes
     .map(id => state.world.nodes[id])
@@ -352,21 +373,23 @@ export function buildNotebookHTML(state) {
         <span>⚡ Scanner charges: <strong>${state.player.scanner_charges}</strong></span>
       </div>
 
+      ${_nextStepHTML(state)}
+
+      ${buildDiagnosisHTML(state)}
+
       <section class="nb-section">
         <h3>Species Records</h3>
         <div class="nb-nodes-list">${nodeCards}</div>
       </section>
 
-      ${buildDiagnosisHTML(state)}
-
-      <section class="nb-section">
-        <h3>Trophic Web (Revealed Links)</h3>
+      <details class="nb-details">
+        <summary>Trophic Web — ${edgeCount} / ${totalEdges} links revealed</summary>
         ${edgesHTML(state)}
-      </section>
+      </details>
 
       <div class="nb-footer">
         <button class="btn" data-action="open-vendor">🛒 Open Intervention Store</button>
-        <button class="btn btn-secondary" data-action="endday">⏭ Advance Day</button>
+        <button class="btn btn-secondary" data-action="endday">▸ End Day</button>
       </div>
     </div>
   `;

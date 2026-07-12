@@ -276,17 +276,19 @@ function tileBaseColor(type) {
 function _biomeFilter(H) {
   const t = Math.max(0, Math.min(1, H / 100));
 
-  // Saturation: 15% at H=0 → 100% at H~60 → 130% at H=100
-  const sat = Math.round(15 + 115 * t);
+  // Saturation: 40% at H=0 → 100% at H~67 → 130% at H=100. Floor raised from 15%
+  // so a sick biome reads as drained-but-legible, not a muddy grey-brown wash.
+  const sat = Math.round(40 + 90 * t);
 
-  // Brightness: 68% at H=0 → 100% at H~65 → 110% at H=100
-  const bri = Math.round(68 + 42 * t);
+  // Brightness: 72% at H=0 → 110% at H=100. Floor raised so tiles stay readable.
+  const bri = Math.round(72 + 38 * t);
 
-  // Sepia: heavy at low health (muddy wetland), none at high health
-  const sep = Math.round(Math.max(0, (1 - t * 2)) * 55); // 55% → 0% over bottom half
+  // Sepia: capped at 30% (was 55%) — enough to feel "off"/unhealthy without the
+  // camo-brown mud. Fades to 0 by the mid-point.
+  const sep = Math.round(Math.max(0, (1 - t * 2)) * 30);
 
-  // Hue-rotate: slight warm shift (+10°) when sick, slight cool (-6°) when pristine
-  const hue = Math.round(10 - 16 * t); // +10 at H=0, -6 at H=100
+  // Hue-rotate: gentle — a touch warm when sick, slightly cool when pristine.
+  const hue = Math.round(4 - 10 * t); // +4 at H=0, -6 at H=100
 
   return `saturate(${sat}%) brightness(${bri}%) sepia(${sep}%) hue-rotate(${hue}deg)`;
 }

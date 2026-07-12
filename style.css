@@ -32,6 +32,10 @@
 
   /* Typography */
   --font-main:  'Courier New', Courier, monospace;
+  /* Display face for headings only — a friendlier, non-terminal feel while
+   * staying fully offline (CSP blocks web fonts, so this is a system stack).
+   * Data / numbers keep --font-main. */
+  --font-display: 'Trebuchet MS', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --font-size:  13px;
 }
 
@@ -122,8 +126,9 @@ html, body {
 }
 
 .panel h2 {
-  font-size: 1.1em;
-  letter-spacing: 0.08em;
+  font-family: var(--font-display);
+  font-size: 1.15em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--accent);
   margin-bottom: 12px;
@@ -208,8 +213,9 @@ html, body {
 }
 
 .card h1 {
-  font-size: 1.6em;
-  letter-spacing: 0.12em;
+  font-family: var(--font-display);
+  font-size: 1.7em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent);
   margin-bottom: 12px;
@@ -526,9 +532,48 @@ html, body {
 }
 
 .nb-edge-from  { color: #b8e8ff; }
+.nb-edge-rel   { opacity: 0.55; font-size: 0.82em; font-style: italic; }
 .nb-edge-arrow { color: rgba(255,255,255,0.3); }
 .nb-edge-to    { color: #e8c870; }
-.nb-edge-beta  { margin-left: auto; opacity: 0.5; font-size: 0.8em; }
+
+/* ── "Do this next" line (top of notebook — single-glance action) ─────────── */
+.nb-next {
+  background: rgba(76, 206, 160, 0.10);
+  border: 1px solid rgba(76, 206, 160, 0.35);
+  border-left: 3px solid #4ccea0;
+  border-radius: 6px;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  font-size: 0.88em;
+  line-height: 1.5;
+}
+.nb-next strong { color: #4ccea0; }
+.nb-next-scan {
+  background: rgba(240, 165, 0, 0.08);
+  border-color: rgba(240, 165, 0, 0.35);
+  border-left-color: var(--accent);
+}
+.nb-next-scan strong { color: var(--accent); }
+.nb-next-cost { float: right; color: var(--accent); font-weight: 700; }
+
+/* ── Collapsed Trophic Web (progressive disclosure — reduces overload) ─────── */
+.nb-details {
+  margin-bottom: 18px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 10px;
+}
+.nb-details > summary {
+  cursor: pointer;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  opacity: 0.75;
+  list-style-position: inside;
+  margin-bottom: 8px;
+}
+.nb-details > summary:hover { opacity: 1; }
+.nb-details[open] > summary { margin-bottom: 10px; }
 
 .nb-footer {
   display: flex;
@@ -1065,10 +1110,11 @@ html, body {
 @keyframes boot-spin { to { transform: rotate(360deg); } }
 
 .boot-title {
-  font-size: 1.6em;
+  font-family: var(--font-display);
+  font-size: 1.7em;
   font-weight: 700;
   color: var(--accent);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
 }
 
 .boot-sub { opacity: 0.75; max-width: 30ch; }
