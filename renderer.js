@@ -200,8 +200,9 @@ export function setupDPICanvas(canvas) {
  */
 function getTileMetrics(state, canvas) {
   const { w, h } = state.world.grid;
-  const cssW = canvas.getBoundingClientRect().width  || canvas.width;
-  const cssH = canvas.getBoundingClientRect().height || canvas.height;
+  const rect = canvas.getBoundingClientRect();   // one reflow, not two
+  const cssW = rect.width  || canvas.width;
+  const cssH = rect.height || canvas.height;
   const availH = cssH - C.HUD_HEIGHT;
   const tileW = Math.floor(cssW / w);
   const tileH = Math.floor(availH / h);
@@ -306,18 +307,16 @@ function _biomeFilter(H) {
  *       sprite on top of the healthy sprite (keeps Rule 01 fallback).
  */
 function drawTileGrid(state, ctx, metrics, timestamp = 0) {
-  const H    = _easeHealth(state.meta.ecosystem_health);   // 0–100, eased for smooth transitions
+  const H    = state.meta.ecosystem_health;   // raw; global vibrancy applied at composite time
   const seed = state.meta.seed ?? 12345;
 
   // Flat-colour fallback health fraction (used only when sprites are absent)
   const healthFrac = 0.25 + 0.20 * Math.max(0, Math.min(1, H / 100));
 
-  // ── (A) Set global biome filter for all tiles ────────────────────────────
-  // We apply filter once on ctx.save() scope wrapping the whole tile layer.
-  // Grid lines and protected borders are drawn OUTSIDE this filter scope
-  // so they always remain crisp and readable.
+  // PERF: tiles are baked UNFILTERED into the offscreen world-base cache
+  // (_ensureWorldCache). The health→vibrancy biome filter is applied ONCE to the
+  // whole composited layer in render(), instead of per-tile every frame.
   ctx.save();
-  ctx.filter = _biomeFilter(H);
 
   for (const [tileId, tile] of Object.entries(state.world.tiles)) {
     const { x, y, w, h } = tilePx(tileId, state, metrics);
@@ -407,15 +406,11 @@ function drawTileGrid(state, ctx, metrics, timestamp = 0) {
       ctx.fillRect(x, y, w, h);
     }
 
-    // Animated water shimmer (time-based, deterministic — no Math.random)
-    if (type === 'water') drawWaterShimmer(ctx, x, y, w, h, tx, ty, timestamp);
+    // NOTE: animated water shimmer + shoreline foam are NOT baked here (they'd
+    // freeze). They render live in render() via drawWaterShimmerPass/drawShorelines.
   }
 
-  // ── Restore normal filter before drawing grid lines / borders ───────────
   ctx.restore();
-
-  // ── Shoreline foam + banks where water meets land (organic lakes) ───────────
-  drawShorelines(state, ctx, metrics, seed, timestamp);
 
   // ── Protected-zone borders only (no ambient grid — keeps the biome organic) ──
   for (const [tileId, tile] of Object.entries(state.world.tiles)) {
@@ -1697,10 +1692,9 @@ function _propItems(state, seed) {
 
 function drawProps(state, ctx, metrics, timestamp) {
   const seed = state.meta.seed ?? 12345;
-  const H = _dispHealth == null ? state.meta.ecosystem_health : _dispHealth;
   const items = _propItems(state, seed);
+  // PERF: baked UNFILTERED into the world-base cache; biome filter applied at composite.
   ctx.save();
-  ctx.filter = _biomeFilter(H);
   for (const it of items) {
     const spr = getSprite(it.prop);
     if (!spr) continue;
@@ -1719,12 +1713,97 @@ function drawProps(state, ctx, metrics, timestamp) {
   ctx.restore();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// World-base offscreen cache (PERF)
+// The static world = tiles (with toxic crossfade, mirroring, rounding) + props.
+// These only change on a day-step / intervention / resize, yet used to be redrawn
+// — under two expensive ctx.filter scopes — every single frame. We bake them into
+// an offscreen canvas once per structural change and composite that single image
+// each frame under one _biomeFilter() call. Animated layers (shimmer, shorelines,
+// nodes, edges, agent, atmosphere) still draw live on top. Renderer-local; no
+// GameState writes (Rule 03).
+// ─────────────────────────────────────────────────────────────────────────────
+let _worldCache    = null;  // offscreen HTMLCanvasElement at physical (dpr) resolution
+let _worldCacheKey = '';    // structural signature; cache rebuilt when this changes
+
+/** Cheap per-tile signature: stressor level + protected flag drive the baked look. */
+function _stressorSig(state) {
+  let s = '';
+  for (const tile of Object.values(state.world.tiles)) {
+    s += (tile.stressor | 0) + (tile.protected ? 'p' : '') + ',';
+  }
+  return s;
+}
+
+/** Rebuild the offscreen world-base only when its structural inputs change. */
+function _ensureWorldCache(state, metrics, cssW, cssH) {
+  const dpr = window.devicePixelRatio || 1;
+  const key = [
+    state.meta.seed, state.meta.biome_template,
+    metrics.tileW, metrics.tileH, metrics.offsetX, metrics.offsetY,
+    Math.round(cssW), Math.round(cssH), dpr, _stressorSig(state),
+  ].join(':');
+  if (key === _worldCacheKey && _worldCache) return;
+
+  if (!_worldCache) _worldCache = document.createElement('canvas');
+  _worldCache.width  = Math.max(1, Math.round(cssW * dpr));
+  _worldCache.height = Math.max(1, Math.round(cssH * dpr));
+  const octx = _worldCache.getContext('2d');
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS px, back at physical res
+  octx.clearRect(0, 0, cssW, cssH);
+  drawTileGrid(state, octx, metrics, 0);      // tiles + protected borders (unfiltered)
+  drawProps(state, octx, metrics, 0);         // props (unfiltered)
+  _worldCacheKey = key;
+}
+
+/** Force a world-base rebuild on the next frame (e.g. after newGame). */
+export function invalidateWorldCache() { _worldCacheKey = ''; _filteredKey = ''; }
+
+// ── Second-level cache: world-base WITH the biome filter already applied. ─────
+// The filter input only changes when eased health moves ≥1 point, so once the
+// ease settles, every frame composites a plain unfiltered image — zero filter
+// work. This is the difference between 60fps and a slideshow on integrated-GPU
+// or software-rendered machines, where ctx.filter falls off a cliff.
+let _filteredCache = null;
+let _filteredKey   = '';
+
+function _filteredWorld(H) {
+  const hq  = Math.round(H);                 // 1-point quantise: imperceptible
+  const key = _worldCacheKey + '|H' + hq;
+  if (key === _filteredKey && _filteredCache) return _filteredCache;
+  if (!_filteredCache) _filteredCache = document.createElement('canvas');
+  _filteredCache.width  = _worldCache.width;
+  _filteredCache.height = _worldCache.height;
+  const fctx = _filteredCache.getContext('2d');
+  fctx.clearRect(0, 0, _filteredCache.width, _filteredCache.height);
+  fctx.filter = _biomeFilter(hq);
+  fctx.drawImage(_worldCache, 0, 0);
+  fctx.filter = 'none';
+  _filteredKey = key;
+  return _filteredCache;
+}
+
+/** Live per-frame water shimmer (was baked inside drawTileGrid; now animates). */
+function drawWaterShimmerPass(state, ctx, metrics, timestamp) {
+  const seed = state.meta.seed ?? 12345;
+  for (const [tileId, tile] of Object.entries(state.world.tiles)) {
+    let tx, ty;
+    if (tile.x !== undefined) { tx = tile.x; ty = tile.y; }
+    else { const p = tileId.split('_'); tx = +p[1]; ty = +p[2]; }
+    const type = tile.type === 'source' ? 'source' : tileTypeFromNoise(seed, tx, ty);
+    if (type !== 'water') continue;
+    const { x, y, w, h } = tilePx(tileId, state, metrics);
+    drawWaterShimmer(ctx, x, y, w, h, tx, ty, timestamp);
+  }
+}
+
 /**
  * render(state, ctx, timestamp)
  *
  * Called every requestAnimationFrame tick from main.js.
  * READ-ONLY — mutates nothing in GameState (Rule 03).
- * Renderer-private display vars (_dispHealth, _ripples, _propCache) are NOT GameState.
+ * Renderer-private display vars (_dispHealth, _ripples, _propCache, _worldCache)
+ * are NOT GameState.
  *
  * @param {object} state       — GameState singleton (or compatible object)
  * @param {CanvasRenderingContext2D} ctx
@@ -1753,12 +1832,19 @@ export function render(state, ctx, timestamp = 0) {
   }
 
   const metrics = getTileMetrics(state, canvas);
+  const H = _easeHealth(state.meta.ecosystem_health); // eased 0–100 for smooth vibrancy
 
-  // ── Layer 1: Tile grid ────────────────────────────────────────────────────
-  drawTileGrid(state, ctx, metrics, timestamp);
+  // ── Layer 1 + 1.5: World base (tiles + props) from the offscreen cache,
+  //    composited in ONE pass under a single health→vibrancy biome filter. ──────
+  _ensureWorldCache(state, metrics, cssW, cssH);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);  // identity: cache is already at physical px
+  ctx.drawImage(_filteredWorld(H), 0, 0);  // pre-filtered — plain blit on cache hit
+  ctx.restore();                       // restores dpr transform
 
-  // ── Layer 1.5: Decorative props (under nodes/agent) ─────────────────────────
-  drawProps(state, ctx, metrics, timestamp);
+  // ── Live animated terrain layers (excluded from the static bake) ────────────
+  drawWaterShimmerPass(state, ctx, metrics, timestamp);
+  drawShorelines(state, ctx, metrics, state.meta.seed ?? 12345, timestamp);
 
   // ── Layer 1.6: Guided-tile coach outline (above props, below sprites) ────────
   drawGuidedTile(state, ctx, metrics, timestamp);
