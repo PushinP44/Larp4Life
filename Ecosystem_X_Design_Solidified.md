@@ -170,7 +170,10 @@ All pre-baked, all offline, all reproducible from state + seed. No runtime text 
 
 ---
 
-## 9. Critical numbers (POST Phase-1 balance pass + difficulty re-tune — harness-verified)
+## 9. Critical numbers — SOURCE OF TRUTH is `balance.js`
+> All tuning constants now live in **`balance.js`** (imported by ecosystem.js, validator.js,
+> state.js and the harness). Retune there and run `npm test`. The mirror below is for reading;
+> `balance.js` is authoritative.
 ```
 Ecosystem Health tiers:  Toxic <25 · Degraded 25–50 · Recovering 50–75 · Pristine ≥75
 Win:  H≥75 sustained 3 consecutive days, 0 keystone extinct
@@ -180,13 +183,13 @@ Lose precedence (evaluateWinLose order):
   3. collapse_timer ≤ 0 → LOSE
 Extinction:  P==0 for 3 consecutive days
 Stability guard:  MAX_DELTA_FRAC = 0.35  (per-step net change cap)
-Food model:  FOOD_SUFFICIENCY (θ) = 0.4 · STARVE_RATE = 0.3
-Health penalty:  stressorLoadPenalty coefficient = 0.10  (was 0.15)
+Food model:  FOOD_SUFFICIENCY (θ) = 0.4 · STARVE_RATE = 0.18
+Health penalty:  stressorLoadPenalty coefficient = 0.10
 Market priceFactor:  Toxic ×1.8 · Degraded ×1.3 · Recovering ×1.0 · Pristine ×0.8
-Interventions (base cost, pre-hysteria):  Bioremediation 60 (−50 L, player tile) · Rebalancing 90 · Stabilization 150
-Economy:  Start resources 100 · DAILY_INCOME 55/day · collapse_timer 40
+Interventions (base cost, pre-hysteria):  Bioremediation 60 (−50 L, player tile) · Rebalancing 45 · Stabilization 120
+Economy:  Start resources 100 · DAILY_INCOME 65/day · collapse_timer 45 (uniform)
 Generation:  start.stressor [40,60] · start.populationFrac [0.35,0.55]
 ```
-The headless balance harness (`tools/balance-harness.js`) is the source of truth. 1000-seed sweep results:
-**win-rate 100% · first-seed-valid 78.1% · median days-to-win 23 · p10/p90 19/26 · 0% fallback · deterministic.**
-Re-run after any change to these numbers.
+The headless balance harness (`tools/balance-harness.js`) verifies these numbers each run (`npm test`). 1000-seed sweep:
+**win-rate 100% · median days-to-win 23 · p10/p90 19/26 · 0% fallback · deterministic · 0 NaN · 0 Δ-violation.**
+Re-run after any change to `balance.js`.

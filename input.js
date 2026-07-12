@@ -51,6 +51,17 @@ function _keyToDir(key) {
   }
 }
 
+// ── Touch D-pad API ──────────────────────────────────────────────────────────
+// The on-screen D-pad (mobile) reuses the exact same hold-to-walk loop as the
+// keyboard: pressDir adds a held direction, releaseDir removes it, tickMovement
+// does the stepping. Keeps one movement code path for keys and touch.
+/** Begin holding a direction (pointerdown on a D-pad button). */
+export function pressDir(dir)    { if (dir) _heldDirs.add(dir); }
+/** Stop holding a direction (pointerup/leave/cancel on a D-pad button). */
+export function releaseDir(dir)  { if (dir) _heldDirs.delete(dir); }
+/** Release every held direction (e.g. when a panel opens). */
+export function releaseAllDirs() { _heldDirs.clear(); }
+
 /** Map direction label → (dx, dy) delta */
 function _dirToDelta(dir) {
   switch (dir) {
