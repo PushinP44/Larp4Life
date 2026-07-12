@@ -113,21 +113,24 @@ Activate in CodeBuddy: "Follow the agent configuration in .codebuddy/agents/proj
 
 ---
 
-## Critical Numbers (POST Phase-1 balance pass + difficulty re-tune — harness-verified)
+## Critical Numbers — SOURCE OF TRUTH is `balance.js` (harness-verified)
+> All tuning constants now live in one file: **`balance.js`**. Retune there, then run
+> `npm test`. The values below mirror it for quick reference — if they ever disagree,
+> `balance.js` wins.
 ```
 Health tiers:  Toxic <25 · Degraded 25–50 · Recovering 50–75 · Pristine ≥75
 Win: H≥75 for 3 consecutive days, 0 keystone extinct   |   Lose: keystone extinct (priority) OR timer 0
   (win/lose precedence: keystone extinct → LOSE always; streak≥3 no-extinct → WIN even if timer just hit 0; then timer 0 → LOSE)
 Extinction: P==0 for 3 consecutive days
 Stability guard: MAX_DELTA_FRAC = 0.35
-Food model:  FOOD_SUFFICIENCY (θ) = 0.4 · STARVE_RATE = 0.3
-Health penalty: stressorLoadPenalty coefficient = 0.10  (was 0.15 pre-re-tune, 0.25 pre-balance)
+Food model:  FOOD_SUFFICIENCY (θ) = 0.4 · STARVE_RATE = 0.18
+Health penalty: stressorLoadPenalty coefficient = 0.10
 Market price ×:  Toxic 1.8 · Degraded 1.3 · Recovering 1.0 · Pristine 0.8
-Interventions (base): Bioremediation 60 (−50 L, player tile) · Rebalancing 55 (cull 45%) · Stabilization 150
-Economy: Start resources 100 · DAILY_INCOME 60/day · Scanner charges 5
-Invasive timer bonus: +30 days (invasive worlds get collapse_timer 70 instead of 40)
-Generation: start.stressor [40,60] · start.populationFrac [0.35,0.55] · collapse_timer 40
-Verified: 1000-seed sweep  win-rate 100%  first-seed-valid 78.1%  median days-to-win 23  p10/p90 19/26  deterministic.
+Interventions (base): Bioremediation 60 (−50 L, player tile) · Rebalancing 45 (cull 45%) · Stabilization 120
+Economy: Start resources 100 · DAILY_INCOME 65/day · Scanner charges 5
+Timer: uniform collapse_timer = 45 for ALL worlds (no per-stressor bonus)
+Generation: start.stressor [40,60] · start.populationFrac [0.35,0.55]
+Verified: 1000-seed sweep  win-rate 100%  median days-to-win 23  p10/p90 19/26  deterministic  0 NaN  0 Δ-violation.
 ```
 
 ---

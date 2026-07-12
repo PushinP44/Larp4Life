@@ -14,6 +14,9 @@
  */
 
 import { signPayload, verifyPayload } from './integrity.js';
+import {
+  COLLAPSE_TIMER, START_RESOURCES, SCANNER_CHARGES, BASE_PRICES,
+} from './balance.js';
 
 const STORAGE_KEY = 'ecosystem_x_state';
 
@@ -34,17 +37,17 @@ function makeDefaultState() {
       seed: 0,                        // integer; written once at generation
       biome_template: 'coastal_wetland',
       day_count: 1,
-      collapse_timer: 45,             // days remaining before lose (re-tune §1: uniform 45 for all worlds)
+      collapse_timer: COLLAPSE_TIMER, // days remaining before lose (balance.js — uniform for all worlds)
       health_streak: 0,               // consecutive days at H >= 75
       ecosystem_health: 50.0,         // 0–100, derived each step
       market_tier: 'Degraded'         // Toxic | Degraded | Recovering | Pristine
     },
     player: {
       name: 'Field Agent',
-      resources: 100,
+      resources: START_RESOURCES,
       tile_x: 4,
       tile_y: 6,
-      scanner_charges: 5,
+      scanner_charges: SCANNER_CHARGES,
       facing: 'down'          // 'down'|'left'|'right'|'up' — updated by input.js on every move
     },
     world: {
@@ -59,11 +62,7 @@ function makeDefaultState() {
       revealed_edges: []              // "from->to" keys the player has observed
     },
     vendor: {
-      base_prices: {
-        bioremediation: 60,   // difficulty re-tune: 80→60 so player can act more frequently
-        rebalancing: 45,      // re-tune: 55→45 so invasive culling is affordable alongside protect
-        stabilization: 120    // re-tune: 150→120 so overharvest protect is reachable on day 1 alongside cull
-      },
+      base_prices: { ...BASE_PRICES }, // base intervention costs (balance.js)
       price_factor: 1.3,              // set by Market Hysteria tier
       available: ['bioremediation', 'rebalancing', 'stabilization']
     },

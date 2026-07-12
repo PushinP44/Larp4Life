@@ -19,24 +19,29 @@
  */
 
 import { runDailyStep } from './ecosystem.js';
+import {
+  COST_BIOREMEDIATION, BIOREM_AMOUNT, COST_REBALANCING, COST_STABILIZATION,
+  PROTECT_CAP, START_RESOURCES, COLLAPSE_TIMER,
+  CULL_FRAC, TRADEOFF_PREY_SAFE,
+} from './balance.js';
 
-// Balance knobs — must mirror ecosystem.js / balance-harness.js
-const BIOREMEDIATION_COST = 60;
-const BIOREM_L_REDUCTION  = 50;
-const CULL_COST           = 45;   // matches rebalancing slot price (re-tune: 55→45)
-const PROTECT_COST        = 120;  // matches stabilization slot price (re-tune: 150→120)
-const PROTECT_CAP         = 20;
-const START_RESOURCES     = 100;
-const COLLAPSE_TIMER      = 45;  // re-tune §1: uniform 45 for all worlds
+// Balance knobs — sourced from balance.js (single source of truth). Local aliases
+// keep this module's solvability-sim wording (cull/protect) readable.
+const BIOREMEDIATION_COST = COST_BIOREMEDIATION;
+const BIOREM_L_REDUCTION  = BIOREM_AMOUNT;
+const CULL_COST           = COST_REBALANCING;   // rebalancing slot price
+const PROTECT_COST        = COST_STABILIZATION; // stabilization slot price
 
 /**
- * validateWorld(world) → { ok, reason }
+ * validateWorld(world, opts?) → { ok, reason }
+ * opts.collapseTimer — per-biome day budget for the solvability sim
+ * (biomes.json `collapseTimer`; defaults to balance.js COLLAPSE_TIMER).
  */
-export function validateWorld(world) {
+export function validateWorld(world, opts = {}) {
   const acyclic = checkAcyclic(world);
   if (!acyclic.ok) return acyclic;
 
-  const solvable = checkSolvable(world);
+  const solvable = checkSolvable(world, opts.collapseTimer ?? COLLAPSE_TIMER);
   if (!solvable.ok) return solvable;
 
   return { ok: true, reason: 'acyclic and solvable' };
@@ -116,9 +121,9 @@ function checkAcyclic(world) {
  *
  * When 2 stressors are active the greedy player addresses BOTH each day.
  */
-function checkSolvable(world) {
-  // Uniform collapse_timer for all worlds — no per-stressor special-casing.
-  const effectiveTimer = COLLAPSE_TIMER;
+function checkSolvable(world, collapseTimer = COLLAPSE_TIMER) {
+  // Per-biome collapse_timer (wetland 45, reef 52) — no per-stressor special-casing.
+  const effectiveTimer = collapseTimer;
 
   const mockState = {
     meta: {
@@ -157,7 +162,7 @@ function checkSolvable(world) {
   const invasiveDef    = activeStressors.find(s => s.type === 'invasive');
   const harvestDef     = activeStressors.find(s => s.type === 'overharvest');
 
-  const maxDays = COLLAPSE_TIMER;
+  const maxDays = effectiveTimer;
 
   for (let day = 0; day < maxDays; day++) {
     const res = mockState.player.resources;
@@ -183,9 +188,9 @@ function checkSolvable(world) {
       const prey = mockState.world.nodes[invasiveDef.targetNative];
       const preyRel = prey && prey.K_max > 0 ? prey.population / prey.K_max : 1;
       // Restore the habitat first: only cull once the prey is healthy (trade-off #2).
-      const safeToCull = preyRel >= 0.45;
+      const safeToCull = preyRel >= TRADEOFF_PREY_SAFE;
       if (inv && inv.status !== 'extinct' && inv.population > 0 && safeToCull) {
-        const removal = Math.ceil(inv.population * 0.45);
+        const removal = Math.ceil(inv.population * CULL_FRAC);
         inv.population = Math.max(0, inv.population - removal);
         mockState.player.resources -= CULL_COST;
       }

@@ -41,12 +41,49 @@
     <canvas id="game" aria-label="Captain Save The World game viewport"></canvas>
 
     <!--
+      #boot-loader: instant first-paint feedback while modules + assets load.
+      Shown by default (no JS needed to render it); main.js hides it once the
+      world is ready, or replaces its text with a friendly error if boot fails.
+      No inline script/handlers — respects the strict CSP (Rule 01).
+    -->
+    <div id="boot-loader" role="status" aria-live="polite">
+      <div class="boot-spinner" aria-hidden="true"></div>
+      <p class="boot-title">Ecosystem X</p>
+      <p class="boot-sub" id="boot-message">Loading the wetland…</p>
+      <noscript>
+        <p class="boot-sub">This game needs JavaScript enabled to run.</p>
+      </noscript>
+    </div>
+
+    <!--
       #overlay: toggled panels rendered OVER the canvas, never replacing it.
       Panels: field-notebook, vendor, start-card, win-card, lose-card.
       All panels injected by notebook.js / vendor.js / main.js as innerHTML.
       Closed with data-action="close" (event delegation in main.js).
     -->
     <div id="overlay" role="dialog" aria-modal="true" hidden></div>
+
+    <!--
+      #touch-controls: on-screen controls for touch / no-keyboard devices.
+      Hidden on desktop (keyboard + click cover everything); shown via CSS on
+      coarse-pointer or narrow screens. All buttons are real <button>s wired
+      through data-action / data-dir (event delegation in main.js) — no inline
+      handlers, so the strict CSP (Rule 01) is preserved. Also fully usable by
+      mouse and keyboard, so it doubles as discoverable desktop controls.
+    -->
+    <div id="touch-controls" aria-label="Touch controls" hidden>
+      <div class="tc-dpad" role="group" aria-label="Move">
+        <button class="tc-btn tc-up"    data-dir="up"    aria-label="Move up">▲</button>
+        <button class="tc-btn tc-left"  data-dir="left"  aria-label="Move left">◀</button>
+        <button class="tc-btn tc-right" data-dir="right" aria-label="Move right">▶</button>
+        <button class="tc-btn tc-down"  data-dir="down"  aria-label="Move down">▼</button>
+      </div>
+      <div class="tc-actions" role="group" aria-label="Actions">
+        <button class="tc-action" data-action="open-notebook" aria-label="Field Notebook">📓<span>Notes</span></button>
+        <button class="tc-action" data-action="open-vendor"   aria-label="Interventions">🧪<span>Store</span></button>
+        <button class="tc-action tc-endday" data-action="endday" aria-label="Advance one day">⏭<span>Next Day</span></button>
+      </div>
+    </div>
   </div>
 
   <!-- Single module entry point — no other inline scripts (Rule 01) -->

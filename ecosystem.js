@@ -24,34 +24,31 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Balance knobs (Rule 02-C footnote — harness is source of truth)
+// Balance knobs — imported from balance.js (single source of truth). Re-exported
+// so existing `import { RUNOFF_SPREAD, … } from './ecosystem.js'` call sites keep
+// working. Retune in balance.js, then run `npm test`.
 // ─────────────────────────────────────────────────────────────────────────────
-const FOOD_SUFFICIENCY = 0.4;   // θ — food at ≥θ of pristine capacity fully sustains consumer
-const STARVE_RATE      = 0.18;  // fraction of population lost per day when food→0 (re-tune §2: 0.30→0.18 to allow staggered recovery)
-const MAX_DELTA_FRAC   = 0.35;  // ±35 % stability clamp on daily population change
-const DAILY_INCOME     = 65;    // resources credited each day (re-tune: 60→65 for dual-stressor pacing)
+import {
+  FOOD_SUFFICIENCY, STARVE_RATE, MAX_DELTA_FRAC, DAILY_INCOME,
+  STRESSOR_PENALTY_COEFF,
+  RUNOFF_SPREAD, HARVEST_DRAIN, CULL_FRAC, PROTECT_CAP, BIOREM_AMOUNT,
+  TRADEOFF_PREY_SAFE, INVASIVE_STARVE_FLOOR, HERON_STARVE_PENALTY,
+  RUNOFF_ESCALATION_RATE, RUNOFF_ESCALATION_MAX, RUNOFF_ESCALATION_DECAY,
+} from './balance.js';
 
-// ── Typed-stressor knobs ──────────────────────────────────────────────────────
-export const RUNOFF_SPREAD   = 4;    // L added to each orthogonal neighbour per day
-export const HARVEST_DRAIN   = 6;    // default daily population drain (overharvest)
-export const CULL_FRAC       = 0.45; // fraction of invasive population removed per cull
-export const PROTECT_CAP     = 20;   // max stressor on a protected tile
-export const BIOREM_AMOUNT   = 50;   // L reduction per bioremediation application
+export {
+  RUNOFF_SPREAD, HARVEST_DRAIN, CULL_FRAC, PROTECT_CAP, BIOREM_AMOUNT,
+  TRADEOFF_PREY_SAFE, INVASIVE_STARVE_FLOOR, HERON_STARVE_PENALTY,
+};
 
 // Trade-off (#2): the invasive (Mozambique Tilapia) is also the keystone predator's
 // food. Culling it to near-zero while the predator's PRIMARY prey is still scarce
 // deprives the predator — it loses condition each day until the prey recovers.
 // Winning line: restore the habitat (raise prey) FIRST, then finish the cull.
-export const TRADEOFF_PREY_SAFE    = 0.45;  // prey rel abundance below which the predator is at risk
-export const INVASIVE_STARVE_FLOOR = 0.20;  // invasive rel abundance below which its backup-food role is gone
-export const HERON_STARVE_PENALTY  = 6;     // predator population lost per day when over-culled while prey scarce
-
 // Escalation (#4): unaddressed runoff pollution ACCELERATES over time (bounded),
 // and reverses once the source is bioremediated. Rewards fast root-cause action;
 // punishes dawdling. Tile-L based → no population-clamp interaction.
-export const RUNOFF_ESCALATION_RATE  = 0.06; // +intensity per day the source stays uncleaned
-export const RUNOFF_ESCALATION_MAX   = 0.80; // cap — spread up to ×1.8 at full escalation
-export const RUNOFF_ESCALATION_DECAY = 0.15; // intensity recovered per day once the source is cleaned
+// Both sets of knobs live in balance.js.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Eq1 — Dynamic carrying capacity
@@ -187,8 +184,8 @@ export function computeHealth(state) {
 
   const populationScore = totalWeight > 0 ? 100 * (weightedSum / totalWeight) : 0;
 
-  // stressorLoadPenalty = 0.10 × mean stressor L across all stressor-source tiles
-  // (only the n_runoff-type stressor node's tile contributes — not invasive tiles)
+  // stressorLoadPenalty = STRESSOR_PENALTY_COEFF × mean stressor L across all
+  // stressor-source tiles (only n_runoff-type stressor tiles contribute — not invasive)
   const stressorTiles = Object.values(state.world.nodes)
     .filter(n => n.kind === 'stressor')
     .map(n => state.world.tiles[n.tileId]?.stressor ?? 0);
@@ -196,7 +193,7 @@ export function computeHealth(state) {
   const meanStressor = stressorTiles.length > 0
     ? stressorTiles.reduce((a, b) => a + b, 0) / stressorTiles.length
     : 0;
-  const stressorLoadPenalty = 0.10 * meanStressor;
+  const stressorLoadPenalty = STRESSOR_PENALTY_COEFF * meanStressor;
 
   // Invasive health impact comes from ecological suppression of natives (β),
   // not a flat artificial penalty. Penalty set to 0 — let β do the work.
@@ -556,12 +553,12 @@ export function runEcosystemTests() {
     return {
       meta: {
         seed:1337, biome_template:'coastal_wetland', day_count:1,
-        collapse_timer:40, health_streak:0, ecosystem_health:50, market_tier:'Degraded'
+        collapse_timer:45, health_streak:0, ecosystem_health:50, market_tier:'Degraded'
       },
       player: { resources:100, tile_x:4, tile_y:6, scanner_charges:5 },
       world: { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors },
       notebook: { discovered_nodes:[], revealed_edges:[] },
-      vendor: { base_prices:{bioremediation:60,rebalancing:90,stabilization:150},
+      vendor: { base_prices:{bioremediation:60,rebalancing:45,stabilization:120},
                 price_factor:1.0, available:['bioremediation','rebalancing','stabilization'] },
       flags: { win:false, lose:false },
       resetDay() { this.world.actionsThisStep = {}; _saved = true; },
@@ -700,11 +697,11 @@ export function runEcosystemTests() {
       ];
       return {
         meta: { seed:42, biome_template:'coastal_wetland', day_count:1,
-                collapse_timer:40, health_streak:0, ecosystem_health:50, market_tier:'Degraded' },
+                collapse_timer:45, health_streak:0, ecosystem_health:50, market_tier:'Degraded' },
         player: { resources:100, tile_x:4, tile_y:6, scanner_charges:5 },
         world:  { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors:[] },
         notebook: { discovered_nodes:[], revealed_edges:[] },
-        vendor: { base_prices:{bioremediation:60,rebalancing:90,stabilization:150},
+        vendor: { base_prices:{bioremediation:60,rebalancing:45,stabilization:120},
                   price_factor:1.0, available:[] },
         flags: { win:false, lose:false },
         resetDay() { this.world.actionsThisStep = {}; },

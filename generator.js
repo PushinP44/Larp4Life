@@ -404,7 +404,7 @@ export function generateWorld(template, seed, state) {
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const world = buildWorld(template, currentSeed);
-    const result = validateWorld(world);
+    const result = validateWorld(world, { collapseTimer: template.collapseTimer });
 
     if (result.ok) {
       state.world                  = world;
@@ -451,12 +451,12 @@ export async function runGeneratorTests() {
     let _saved = null;
     return {
       meta:  { seed: 0, biome_template: 'coastal_wetland', day_count: 1,
-               collapse_timer: 40, health_streak: 0, ecosystem_health: 50,
+               collapse_timer: 45, health_streak: 0, ecosystem_health: 50,
                market_tier: 'Degraded' },
       player: { resources: 100, tile_x: 4, tile_y: 6, scanner_charges: 5 },
       world:  { grid:{w:16,h:12}, tiles:{}, nodes:{}, edges:[], actionsThisStep:{}, activeStressors:[] },
       notebook: { discovered_nodes:[], revealed_edges:[] },
-      vendor: { base_prices:{bioremediation:60,rebalancing:90,stabilization:150},
+      vendor: { base_prices:{bioremediation:60,rebalancing:45,stabilization:120},
                 price_factor:1.0, available:['bioremediation','rebalancing','stabilization'] },
       flags: { win:false, lose:false },
       save() { _saved = JSON.parse(JSON.stringify({ meta:this.meta, world:this.world })); },

@@ -22,7 +22,11 @@ import {
   markNodeDiscovered, pingCleanEffect, flashCanvas, setGuidedTile,
 } from './renderer.js';
 import { runDailyStep, computeHealth } from './ecosystem.js';
-import { initInput, triggerScan, scanTile, tickMovement } from './input.js';
+import {
+  initInput, triggerScan, scanTile, tickMovement,
+  pressDir, releaseDir, releaseAllDirs,
+} from './input.js';
+import { SCANNER_CHARGES, COLLAPSE_TIMER } from './balance.js';
 import { buildNotebookHTML, getTopRecommendation }  from './notebook.js';
 import { escapeHTML, escapeAttr } from './safehtml.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
@@ -40,6 +44,25 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 const canvas  = document.getElementById('game');
 const overlay = document.getElementById('overlay');
+
+// ── Boot loader control (instant first-paint feedback / graceful boot errors) ──
+function hideBootLoader() {
+  const el = document.getElementById('boot-loader');
+  if (el) el.remove();
+}
+
+function showBootError(message) {
+  const el  = document.getElementById('boot-loader');
+  const msg = document.getElementById('boot-message');
+  if (el) el.classList.add('boot-error');
+  const spinner = el?.querySelector('.boot-spinner');
+  if (spinner) spinner.remove();
+  if (msg) {
+    msg.textContent = message;
+  } else if (el) {
+    el.textContent = message;
+  }
+}
 
 /** @type {CanvasRenderingContext2D} */
 let ctx = setupDPICanvas(canvas);
@@ -99,6 +122,9 @@ async function bootstrap() {
                    Object.keys(GameState.world.tiles  || {}).length > 0 &&
                    Object.keys(GameState.world.nodes || {}).length > 0;
 
+  // World + content are ready — remove the boot loader so the game shows.
+  hideBootLoader();
+
   if (!hasWorld) {
     // Show intro sequence only on the very first load of this session.
     // New Seed / Retry flows bypass bootstrap() entirely (they call newGame directly),
@@ -126,6 +152,67 @@ function hideOverlay() {
   overlay.hidden = true;
   overlay.innerHTML = '';
   canvas.focus();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared actions — one implementation for keyboard, overlay buttons AND the
+// on-screen touch controls (keeps behaviour identical across every input path).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toggleNotebook() {
+  if (overlay.hidden) showOverlay(buildNotebookHTML(GameState));
+  else hideOverlay();
+}
+
+function toggleVendor() {
+  if (overlay.hidden) showOverlay(buildVendorHTML(GameState));
+  else hideOverlay();
+}
+
+const _TIER_ORDER = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
+
+/**
+ * advanceDay() — run one simulation step and play all the resulting feedback
+ * (day banner, ambient crossfade, tier-up juice, win sting, scanner recharge,
+ * win/lose check). Safe to call from a panel, a key, or a touch button.
+ */
+function advanceDay() {
+  if (GameState.flags.win || GameState.flags.lose) {
+    hideOverlay();
+    return;
+  }
+  const prevHealth = GameState.meta.ecosystem_health;
+  const prevTier   = GameState.meta.market_tier;
+
+  if (!overlay.hidden) hideOverlay();
+
+  runDailyStep(GameState);
+  updateTier(GameState); // sync price factor to the new tier
+
+  const newHealth = GameState.meta.ecosystem_health;
+  const newTier   = GameState.meta.market_tier;
+  showDayResultBanner(prevHealth, newHealth, GameState.meta.day_count);
+
+  // Crossfade ambient audio to match new health tier
+  setHealthAudio(newHealth);
+
+  // Tier-up juice — only when the market tier moved strictly UP
+  if ((_TIER_ORDER[newTier] ?? 0) > (_TIER_ORDER[prevTier] ?? 0)) {
+    playTierUp();
+    flashCanvas(300);
+    setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTier} → ${newTier}`, 'success', 3000), 120);
+  }
+
+  if (GameState.flags.win) playWinSting();
+
+  // Recharge scanner when depleted
+  if (GameState.player.scanner_charges === 0) {
+    GameState.player.scanner_charges = SCANNER_CHARGES;
+    GameState.save();
+    setTimeout(() => showToast(`⚡ Scanner recharged — ${SCANNER_CHARGES} new scouting charges.`, 'success', 2500), 800);
+  }
+
+  setTimeout(checkEndCondition, 400);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,30 +516,8 @@ document.addEventListener('click', async (e) => {
     }
 
     case 'endday': {
-      if (GameState.flags.win || GameState.flags.lose) break;
       _unlockAudio();
-      const prevHealth = GameState.meta.ecosystem_health;
-      const prevTier   = GameState.meta.market_tier;
-      runDailyStep(GameState);
-      updateTier(GameState);
-      const newDay    = GameState.meta.day_count;
-      const newHealth = GameState.meta.ecosystem_health;
-      const newTier   = GameState.meta.market_tier;
-      showDayResultBanner(prevHealth, newHealth, newDay);
-      setHealthAudio(newHealth);
-      const _TIER_ORDER_C = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
-      if ((_TIER_ORDER_C[newTier] ?? 0) > (_TIER_ORDER_C[prevTier] ?? 0)) {
-        playTierUp();
-        flashCanvas(300);
-        setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTier} → ${newTier}`, 'success', 3000), 120);
-      }
-      if (GameState.flags.win) playWinSting();
-      if (GameState.player.scanner_charges === 0) {
-        GameState.player.scanner_charges = 5;
-        GameState.save();
-        setTimeout(() => showToast('⚡ Scanner recharged — 5 new scouting charges.', 'success', 2500), 800);
-      }
-      setTimeout(checkEndCondition, 400);
+      advanceDay();
       break;
     }
 
@@ -623,7 +688,7 @@ async function newGame(seed, biomeKey = _selectedBiome) {
     GameState.reset();
     GameState.meta.biome_template = biomeKey;
     GameState.meta.biome_name     = template.displayName ?? 'ecosystem';
-    GameState.meta.collapse_timer = template.collapseTimer ?? 45;  // per-biome clock
+    GameState.meta.collapse_timer = template.collapseTimer ?? COLLAPSE_TIMER;  // per-biome clock
     _proximityDiscovered.clear(); // reset session discovery tracker for new world
     generateWorld(template, seed, GameState);
 
@@ -833,48 +898,7 @@ overlay.addEventListener('click', async (e) => {
 
     // ── Advance Day ───────────────────────────────────────────────────────
     case 'endday': {
-      if (GameState.flags.win || GameState.flags.lose) {
-        hideOverlay();
-        break;
-      }
-      const prevHealth = GameState.meta.ecosystem_health;
-      const prevTier   = GameState.meta.market_tier;
-      hideOverlay();
-
-      // Run simulation step (hysteria updateTier is called inside via stub;
-      // we also call updateTier explicitly for price factor sync)
-      runDailyStep(GameState);
-      updateTier(GameState);
-
-      const newDay    = GameState.meta.day_count;
-      const newHealth = GameState.meta.ecosystem_health;
-      const newTier   = GameState.meta.market_tier;
-      showDayResultBanner(prevHealth, newHealth, newDay);
-
-      // Crossfade ambient audio to match new health tier
-      setHealthAudio(newHealth);
-
-      // ── D: Tier-up juice ──────────────────────────────────────────────
-      // Fire when the market tier moved strictly UP (Toxic<Degraded<Recovering<Pristine)
-      const _TIER_ORDER = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
-      if ((_TIER_ORDER[newTier] ?? 0) > (_TIER_ORDER[prevTier] ?? 0)) {
-        playTierUp();
-        flashCanvas(300);
-        setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTier} → ${newTier}`, 'success', 3000), 120);
-      }
-
-      // Win sting (fires once when win flag first becomes true)
-      if (GameState.flags.win) playWinSting();
-
-      // Check for game-over conditions
-      setTimeout(checkEndCondition, 400);
-
-      // Recharge scanner each day (soft discovery counter reset)
-      if (GameState.player.scanner_charges === 0) {
-        GameState.player.scanner_charges = 5;
-        GameState.save();
-        setTimeout(() => showToast('⚡ Scanner recharged — 5 new scouting charges.', 'success', 2500), 800);
-      }
+      advanceDay();
       break;
     }
 
@@ -884,52 +908,71 @@ overlay.addEventListener('click', async (e) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// On-screen touch controls (mobile / no-keyboard). Reuse the same actions as
+// keyboard + overlay. Movement uses press/release so hold-to-walk works.
+// ─────────────────────────────────────────────────────────────────────────────
+(function wireTouchControls() {
+  const tc = document.getElementById('touch-controls');
+  if (!tc) return;
+
+  // Reveal on touch / coarse-pointer / narrow screens.
+  const coarse = window.matchMedia('(pointer: coarse)').matches;
+  const narrow = window.matchMedia('(max-width: 820px)').matches;
+  if (coarse || narrow) tc.hidden = false;
+
+  // D-pad: hold-to-walk via press/release. pointer events cover touch + mouse.
+  tc.querySelectorAll('[data-dir]').forEach((btn) => {
+    const dir = btn.dataset.dir;
+    const press = (e) => { e.preventDefault(); pressDir(dir); };
+    const release = () => releaseDir(dir);
+    btn.addEventListener('pointerdown', press);
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointerleave', release);
+    btn.addEventListener('pointercancel', release);
+    // Keyboard access (Enter/Space on a focused D-pad button = one step)
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { pressDir(dir); }
+    });
+    btn.addEventListener('keyup', release);
+  });
+
+  // Action buttons
+  tc.querySelectorAll('[data-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      releaseAllDirs();
+      switch (btn.dataset.action) {
+        case 'open-notebook': _unlockAudio(); toggleNotebook(); break;
+        case 'open-vendor':   _unlockAudio(); toggleVendor();   break;
+        case 'endday':        _unlockAudio(); advanceDay();     break;
+        default: break;
+      }
+    });
+  });
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HUD button clicks (canvas-level actions bar at bottom)
 // Keyboard shortcuts for panels (no canvas overlap needed)
 // ─────────────────────────────────────────────────────────────────────────────
 
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  // Touch-control buttons handle their own keys — don't double-fire here.
+  if (e.target.closest && e.target.closest('#touch-controls')) return;
 
   switch (e.key) {
     case 'n': case 'N':
       e.preventDefault();
-      if (overlay.hidden) showOverlay(buildNotebookHTML(GameState));
-      else hideOverlay();
+      toggleNotebook();
       break;
     case 'v': case 'V':
       e.preventDefault();
-      if (overlay.hidden) showOverlay(buildVendorHTML(GameState));
-      else hideOverlay();
+      toggleVendor();
       break;
     case ' ':
       e.preventDefault();
-      if (overlay.hidden) {
-        // Space = end day (quick play)
-        if (!GameState.flags.win && !GameState.flags.lose) {
-          const _TIER_ORDER_SP = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
-          const prevHealth = GameState.meta.ecosystem_health;
-          const prevTierSp = GameState.meta.market_tier;
-          runDailyStep(GameState);
-          updateTier(GameState);
-          const newTierSp = GameState.meta.market_tier;
-          showDayResultBanner(prevHealth, GameState.meta.ecosystem_health, GameState.meta.day_count);
-          setHealthAudio(GameState.meta.ecosystem_health);
-          // ── D: Tier-up juice (spacebar path) ──────────────────────────
-          if ((_TIER_ORDER_SP[newTierSp] ?? 0) > (_TIER_ORDER_SP[prevTierSp] ?? 0)) {
-            playTierUp();
-            flashCanvas(300);
-            setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTierSp} → ${newTierSp}`, 'success', 3000), 120);
-          }
-          if (GameState.flags.win) playWinSting();
-          if (GameState.player.scanner_charges === 0) {
-            GameState.player.scanner_charges = 5;
-            GameState.save();
-            setTimeout(() => showToast('⚡ Scanner recharged — 5 new scouting charges.', 'success', 2000), 500);
-          }
-          setTimeout(checkEndCondition, 400);
-        }
-      }
+      // Space = end day (quick play) — only from the game view, not over a panel
+      if (overlay.hidden) advanceDay();
       break;
     case 'Escape':
       if (!overlay.hidden) hideOverlay();
@@ -1045,4 +1088,5 @@ document.addEventListener('visibilitychange', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 bootstrap().catch(err => {
   console.error('[main.js] bootstrap failed:', err);
+  showBootError('Could not start the game. Please refresh the page to try again.');
 });
