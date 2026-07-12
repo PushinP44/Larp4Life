@@ -19,15 +19,17 @@
  */
 
 import { runDailyStep } from './ecosystem.js';
+import {
+  COST_BIOREMEDIATION, BIOREM_AMOUNT, COST_REBALANCING, COST_STABILIZATION,
+  PROTECT_CAP, START_RESOURCES, COLLAPSE_TIMER,
+} from './balance.js';
 
-// Balance knobs — must mirror ecosystem.js / balance-harness.js
-const BIOREMEDIATION_COST = 60;
-const BIOREM_L_REDUCTION  = 50;
-const CULL_COST           = 45;   // matches rebalancing slot price (re-tune: 55→45)
-const PROTECT_COST        = 120;  // matches stabilization slot price (re-tune: 150→120)
-const PROTECT_CAP         = 20;
-const START_RESOURCES     = 100;
-const COLLAPSE_TIMER      = 45;  // re-tune §1: uniform 45 for all worlds
+// Balance knobs — sourced from balance.js (single source of truth). Local aliases
+// keep this module's solvability-sim wording (cull/protect) readable.
+const BIOREMEDIATION_COST = COST_BIOREMEDIATION;
+const BIOREM_L_REDUCTION  = BIOREM_AMOUNT;
+const CULL_COST           = COST_REBALANCING;   // rebalancing slot price
+const PROTECT_COST        = COST_STABILIZATION; // stabilization slot price
 
 /**
  * validateWorld(world) → { ok, reason }

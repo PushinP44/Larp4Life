@@ -37,6 +37,11 @@ const projectRoot = path.resolve(__dirname, '..');
 
 import { generateWorld }  from '../generator.js';
 import { runDailyStep }   from '../ecosystem.js';
+import {
+  MAX_DELTA_FRAC, COST_BIOREMEDIATION, BIOREM_AMOUNT,
+  COST_REBALANCING, COST_STABILIZATION, PROTECT_CAP,
+  COLLAPSE_TIMER, DAILY_INCOME, START_RESOURCES, SCANNER_CHARGES,
+} from '../balance.js';
 
 const biomes   = JSON.parse(readFileSync(path.join(projectRoot, 'data/biomes.json'), 'utf8'));
 const TEMPLATE = biomes.coastal_wetland;
@@ -50,15 +55,15 @@ const argVal = (flag, def) => {
 const SEED_COUNT = argVal('--seeds', 1000);
 const SEED_START = argVal('--start', 1);
 
-// ── Balance knobs (mirrored from ecosystem.js / state.js) ─────────────────
-const MAX_DELTA_FRAC       = 0.35;
-const BIOREMEDIATION_COST  = 60;
-const BIOREMEDIATION_L_RED = 50;
-const CULL_COST            = 45;   // re-tune: 55→45 for invasive+overharvest pacing
-const PROTECT_COST         = 120;  // re-tune: 150→120
-const PROTECT_CAP          = 20;
-const COLLAPSE_TIMER_START = 45;   // re-tune §1: uniform 45 for ALL worlds
-const DAILY_INCOME         = 65;  // re-tune: 60→65
+// ── Balance knobs — sourced from balance.js (single source of truth) ──────
+// The harness re-implements the *step logic* as an independent oracle, but the
+// tuning *numbers* come from the same file the game ships, so a retune can never
+// pass here while shipping different values. Local aliases keep the sim wording.
+const BIOREMEDIATION_COST  = COST_BIOREMEDIATION;
+const BIOREMEDIATION_L_RED = BIOREM_AMOUNT;
+const CULL_COST            = COST_REBALANCING;   // rebalancing/cull slot price
+const PROTECT_COST         = COST_STABILIZATION; // stabilization/protect slot price
+const COLLAPSE_TIMER_START = COLLAPSE_TIMER;     // uniform for ALL worlds
 
 // ── Handicapped player constants (§5) ─────────────────────────────────────
 const DIAGNOSIS_LAG        = 3;    // days before handicapped player acts usefully
@@ -80,10 +85,10 @@ function makeMockState(world) {
       market_tier:      'Degraded'
     },
     player: {
-      resources:       100,
+      resources:       START_RESOURCES,
       tile_x:          0,
       tile_y:          0,
-      scanner_charges: 5
+      scanner_charges: SCANNER_CHARGES
     },
     world:    JSON.parse(JSON.stringify(world)),
     notebook: { discovered_nodes: [], revealed_edges: [] },
@@ -401,7 +406,7 @@ function generateForSeed(seed) {
       collapse_timer: COLLAPSE_TIMER_START, health_streak: 0,
       ecosystem_health: 50, market_tier: 'Degraded'
     },
-    player: { resources: 100, tile_x: 0, tile_y: 0, scanner_charges: 5 },
+    player: { resources: START_RESOURCES, tile_x: 0, tile_y: 0, scanner_charges: SCANNER_CHARGES },
     world:  { grid:{w:16,h:12}, tiles:{}, nodes:{}, edges:[], actionsThisStep:{}, activeStressors:[] },
     notebook: { discovered_nodes:[], revealed_edges:[] },
     vendor: { base_prices:{bioremediation:BIOREMEDIATION_COST,rebalancing:CULL_COST,stabilization:PROTECT_COST},

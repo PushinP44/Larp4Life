@@ -1,4 +1,20 @@
 {
+  "name": "ecosystem-x",
+  "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "_comment": "Dev-only: enables `node tools/balance-harness.js` to import ES modules. Not a build step and not shipped with the game."
+  "description": "Ecosystem X: The Last Balance — a browser-based ecological investigation & restoration game. Scan a collapsing coastal wetland, reveal the hidden food web (a seeded DAG), diagnose the root stressor, and intervene to restore Ecosystem Health before the collapse timer expires. Vanilla JS + Canvas, zero build step, offline-capable. Tencent Cloud Hackathon 2026 · Track 1, Direction 2 (Biodiversity & Environmental Protection).",
+  "keywords": ["game", "ecology", "canvas", "vanilla-js", "hackathon", "biodiversity", "simulation"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "npm run serve",
+    "serve": "node tools/serve.js",
+    "test": "node tools/balance-harness.js",
+    "test:quick": "node tools/balance-harness.js --seeds 100",
+    "verify": "node tools/lint.js && node tools/balance-harness.js --seeds 100",
+    "lint": "node tools/lint.js"
+  }
 }
