@@ -47,14 +47,9 @@ export async function loadDialogue() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Price factor table
+// Price factor table — imported from balance.js (single source of truth)
 // ─────────────────────────────────────────────────────────────────────────────
-const PRICE_FACTORS = {
-  Toxic:      1.8,
-  Degraded:   1.3,
-  Recovering: 1.0,
-  Pristine:   0.8,
-};
+import { PRICE_FACTOR as PRICE_FACTORS } from './balance.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI-generated NPC dialogue pool (per tier)

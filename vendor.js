@@ -24,6 +24,7 @@
 
 import { getPricedCost, getVendorDialogue, TIER_COLORS } from './hysteria.js';
 import { getInterventionDialogue, INTERVENTION_DESCRIPTIONS } from './ai_content.js';
+import { BIOREM_AMOUNT } from './balance.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // applyIntervention — state mutation
@@ -67,7 +68,7 @@ export function applyIntervention(type, state) {
         return { ok: false, message: 'No tile at your current position.', cost: 0 };
       }
       const before = tile.stressor ?? 0;
-      tile.stressor = Math.max(0, before - 50); // re-tuned 40→50 for humane margin
+      tile.stressor = Math.max(0, before - BIOREM_AMOUNT);
       effectMessage = `Tile (${state.player.tile_x},${state.player.tile_y}): stressor ${Math.round(before)} → ${Math.round(tile.stressor)}.`;
       if (before < 10) wrongToolWarn = '⚠ That tile was already clean — bioremediation had little effect. Check the diagnosis for the real source.';
       break;

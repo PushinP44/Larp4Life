@@ -29,7 +29,7 @@
 // working. Retune in balance.js, then run `npm test`.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
-  FOOD_SUFFICIENCY, STARVE_RATE, MAX_DELTA_FRAC, DAILY_INCOME,
+  FOOD_SUFFICIENCY, STARVE_RATE, MAX_DELTA_FRAC, DAILY_INCOME, COLLAPSE_TIMER,
   STRESSOR_PENALTY_COEFF,
   RUNOFF_SPREAD, HARVEST_DRAIN, CULL_FRAC, PROTECT_CAP, BIOREM_AMOUNT,
   TRADEOFF_PREY_SAFE, INVASIVE_STARVE_FLOOR, HERON_STARVE_PENALTY,
@@ -553,7 +553,7 @@ export function runEcosystemTests() {
     return {
       meta: {
         seed:1337, biome_template:'coastal_wetland', day_count:1,
-        collapse_timer:45, health_streak:0, ecosystem_health:50, market_tier:'Degraded'
+        collapse_timer:COLLAPSE_TIMER, health_streak:0, ecosystem_health:50, market_tier:'Degraded'
       },
       player: { resources:100, tile_x:4, tile_y:6, scanner_charges:5 },
       world: { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors },
@@ -697,7 +697,7 @@ export function runEcosystemTests() {
       ];
       return {
         meta: { seed:42, biome_template:'coastal_wetland', day_count:1,
-                collapse_timer:45, health_streak:0, ecosystem_health:50, market_tier:'Degraded' },
+                collapse_timer:COLLAPSE_TIMER, health_streak:0, ecosystem_health:50, market_tier:'Degraded' },
         player: { resources:100, tile_x:4, tile_y:6, scanner_charges:5 },
         world:  { grid:{w:16,h:12}, tiles, nodes, edges, actionsThisStep:{}, activeStressors:[] },
         notebook: { discovered_nodes:[], revealed_edges:[] },

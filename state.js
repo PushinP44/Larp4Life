@@ -372,8 +372,8 @@ export function runStateTests() {
     'STATE FAIL: default resources should be 100');
   console.assert(GameState.player.scanner_charges === 5,
     'STATE FAIL: default scanner_charges should be 5');
-  console.assert(GameState.meta.collapse_timer === 45,
-    'STATE FAIL: default collapse_timer should be 45');
+  console.assert(GameState.meta.collapse_timer === COLLAPSE_TIMER,
+    'STATE FAIL: default collapse_timer should equal COLLAPSE_TIMER');
   console.assert(GameState.flags.win === false && GameState.flags.lose === false,
     'STATE FAIL: default flags should be false');
   console.assert(Object.keys(GameState.world.actionsThisStep).length === 0,

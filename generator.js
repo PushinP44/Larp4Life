@@ -18,6 +18,7 @@
 
 import { mulberry32, randFloat, randInt } from './prng.js';
 import { validateWorld } from './validator.js';
+import { COLLAPSE_TIMER } from './balance.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tile-type assignment by node kind
@@ -451,7 +452,7 @@ export async function runGeneratorTests() {
     let _saved = null;
     return {
       meta:  { seed: 0, biome_template: 'coastal_wetland', day_count: 1,
-               collapse_timer: 45, health_streak: 0, ecosystem_health: 50,
+               collapse_timer: COLLAPSE_TIMER, health_streak: 0, ecosystem_health: 50,
                market_tier: 'Degraded' },
       player: { resources: 100, tile_x: 4, tile_y: 6, scanner_charges: 5 },
       world:  { grid:{w:16,h:12}, tiles:{}, nodes:{}, edges:[], actionsThisStep:{}, activeStressors:[] },
