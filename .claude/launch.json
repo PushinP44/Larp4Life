@@ -4,8 +4,38 @@
     {
       "name": "ecox",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8159"],
-      "port": 8159
+      "runtimeArgs": ["-m", "http.server", "8175"],
+      "port": 8175
+    },
+    {
+      "name": "landing",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/nacha/Desktop/ATSHM_portal/code/landing", "--", "--port", "4321"],
+      "port": 4321
+    },
+    {
+      "name": "portal",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/nacha/Desktop/ATSHM_portal/code/app", "--", "--port", "5174"],
+      "port": 5174
+    },
+    {
+      "name": "portal-dist",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview", "--prefix", "/Users/nacha/Desktop/ATSHM_portal/code/app", "--", "--port", "5175", "--strictPort"],
+      "port": 5175
+    },
+    {
+      "name": "landing-dist",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview", "--prefix", "/Users/nacha/Desktop/ATSHM_portal/code/landing", "--", "--port", "4322"],
+      "port": 4322
+    },
+    {
+      "name": "sprout",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/nacha/Desktop/Project/SEA Hack/sprout", "--", "--port", "3117"],
+      "port": 3117
     }
   ]
 }

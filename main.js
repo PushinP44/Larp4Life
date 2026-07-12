@@ -19,14 +19,14 @@ import GameState            from './state.js';
 import { generateWorld }    from './generator.js';
 import {
   render, setupDPICanvas, DISCOVER_RADIUS,
-  markNodeDiscovered, pingCleanEffect, flashCanvas,
+  markNodeDiscovered, pingCleanEffect, flashCanvas, setGuidedTile,
 } from './renderer.js';
 import { runDailyStep, computeHealth } from './ecosystem.js';
 import { initInput, triggerScan, scanTile, tickMovement } from './input.js';
-import { buildNotebookHTML }  from './notebook.js';
+import { buildNotebookHTML, getTopRecommendation }  from './notebook.js';
 import { escapeHTML, escapeAttr } from './safehtml.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
-import { updateTier, loadDialogue } from './hysteria.js';
+import { updateTier, loadDialogue, getPricedCost } from './hysteria.js';
 import {
   loadAIContent, getFieldReportFragment, computeRunGrade,
   getAICodexEntry,
@@ -138,41 +138,37 @@ let _introShown = false;
 
 const _INTRO_PANELS = [
   {
-    counter: '1 / 4',
-    text: `A coastal wetland is <strong>collapsing</strong>.<br>
-           Algae chokes the seagrass, the fish vanish,<br>
-           the storks abandon their nests.`,
+    counter: '1 / 3',
+    text: `An ecosystem is <strong>collapsing</strong>.<br>
+           Every species is a node in a hidden food web.`,
+    bg: 'assets/images/intro_1.png',
   },
   {
-    counter: '2 / 4',
-    text: `Nature is a <strong>network</strong> — every species a node<br>
-           in a hidden food web.<br>
-           Pull one thread and the whole web unravels.`,
+    counter: '2 / 3',
+    text: `<strong>Walk</strong> (WASD / arrows / click) to find wildlife.<br>
+           A <strong>❗</strong> means one is near — scan it to reveal the web.`,
+    bg: 'assets/images/intro_2.png',
   },
   {
-    counter: '3 / 4',
-    text: `You are a <strong>Field Agent</strong>.<br>
-           Walk the wetland (<strong>WASD / arrows</strong>, or click) to find species —<br>
-           a <strong>❗</strong> marks one nearby. Discovering them reveals the food web.`,
-  },
-  {
-    counter: '4 / 4',
-    text: `Trace the web to the <strong>ROOT pollution source</strong>.<br>
-           Bioremediate the right tiles to restore<br>
-           Ecosystem Health to <strong>Pristine</strong> — before the collapse timer hits zero.`,
+    counter: '3 / 3',
+    text: `Read the <strong>diagnosis</strong>, apply the right fix,<br>
+           restore <strong>Health to Pristine</strong> before the timer runs out.`,
     isFinal: true,
+    bg: 'assets/images/intro_3.png',
   },
 ];
 
 /**
  * _introPanelHTML(index) — builds the HTML for one intro panel.
  * CSS classes only (no inline styles except --keyart-url CSS variable).
+ * Each panel uses its own bg image; falls back to --bg-dark if missing (Rule 01).
  */
 function _introPanelHTML(index) {
   const panel     = _INTRO_PANELS[index];
   const nextLabel = panel.isFinal ? 'Begin →' : 'Next →';
+  const bgUrl     = panel.bg ? `url('${panel.bg}')` : 'none';
   return `
-    <div class="intro-panel" style="--keyart-url: url('assets/images/keyart.png')">
+    <div class="intro-panel" style="--keyart-url: ${bgUrl}">
       <div class="intro-content">
         <div class="intro-counter">${panel.counter}</div>
         <p class="intro-text">${panel.text}</p>
@@ -219,29 +215,280 @@ function showToast(message, type = 'info', durationMs = 2800) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Captain's Orders — persistent coach HUD bar
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * computeNextGuidance(state) → { icon, text, action? }
+ *
+ * Priority order (spec §2 a–f):
+ *  a. run over
+ *  b. undiscovered species inside territory
+ *  c. nothing diagnosable yet
+ *  d. top recommendation known → walk / intervene / save up
+ *  e. treating + health rising, no pending cause
+ *  f. health ≥ 75 — hold pristine
+ */
+function computeNextGuidance(state) {
+  if (!state?.world?.tiles) return null;
+
+  // a. Run over
+  if (state.flags?.win) {
+    return {
+      icon: '✦',
+      text: 'Biome restored! Well done.',
+      action: { label: 'New Mission →', do: 'new-seed' },
+    };
+  }
+  if (state.flags?.lose) {
+    return {
+      icon: '✖',
+      text: 'The biome collapsed. Try again.',
+      action: { label: 'Retry →', do: 'new-seed' },
+    };
+  }
+
+  // b. Undiscovered species inside player territory (show ❗ hunt hint)
+  const px = state.player.tile_x;
+  const py = state.player.tile_y;
+  const undiscovered = Object.values(state.world.nodes).filter(n => {
+    if (n.kind === 'stressor' || n.discovered) return false;
+    const tile = state.world.tiles[n.tileId];
+    let ntx, nty;
+    if (tile && tile.x !== undefined) { ntx = tile.x; nty = tile.y; }
+    else { const p = n.tileId.split('_'); ntx = +p[1]; nty = +p[2]; }
+    const dist = Math.max(Math.abs(ntx - px), Math.abs(nty - py));
+    return dist <= 5; // within a loose territory radius
+  });
+  if (undiscovered.length > 0) {
+    return {
+      icon: '🔍',
+      text: 'Walk to the ❗ and scan the wildlife.',
+    };
+  }
+
+  // c. Nothing diagnosable scanned yet
+  const rec = getTopRecommendation(state);
+  const totalSpecies = Object.values(state.world.nodes).filter(n => n.kind !== 'stressor').length;
+  const discovered   = state.notebook.discovered_nodes.filter(
+    id => state.world.nodes[id]?.kind !== 'stressor'
+  ).length;
+  if (!rec && discovered < totalSpecies) {
+    const biomeName = state.meta.biome_name ?? 'ecosystem';
+    return {
+      icon: '🧭',
+      text: `Explore and scan to find what's harming the ${biomeName}.`,
+    };
+  }
+
+  // d. A cause is known
+  if (rec) {
+    const resources = state.player.resources;
+    const canAfford = resources >= rec.cost;
+    // Check if player is on the target tile
+    const onTarget = rec.targetTileId &&
+      rec.targetTileId === `t_${px}_${py}`;
+
+    if (canAfford && onTarget) {
+      // Player is in position and can afford — offer the one-tap button
+      const toolLabels = {
+        bioremediation: 'Bioremediate',
+        rebalancing:    'Rebalance',
+        stabilization:  'Stabilize',
+      };
+      const label = toolLabels[rec.toolType] ?? rec.toolType;
+      return {
+        icon: '⚡',
+        text: `${rec.cause} detected. Act now!`,
+        action: {
+          label: `⚡ ${label} here (¤${rec.cost})`,
+          do: 'guided-intervene',
+          toolType: rec.toolType,
+        },
+      };
+    } else if (canAfford) {
+      // Can afford but not on the right tile — guide them there
+      return {
+        icon: '📍',
+        text: `Go to the glowing tile, then act.`,
+        // No button — movement is the player's job
+      };
+    } else {
+      // Cannot afford
+      return {
+        icon: '⏳',
+        text: `Need ¤${rec.cost} (have ¤${resources}). Advance a day to gather resources.`,
+        action: { label: 'Advance Day', do: 'endday' },
+      };
+    }
+  }
+
+  // e. No pending cause but health is moving
+  const health = state.meta.ecosystem_health ?? 0;
+  if (health < 75) {
+    return {
+      icon: '📈',
+      text: 'Recovering — Advance the Day.',
+      action: { label: 'Advance Day', do: 'endday' },
+    };
+  }
+
+  // f. Pristine hold
+  const daysToWin = Math.max(0, 3 - (state.meta.health_streak ?? 0));
+  return {
+    icon: '🏁',
+    text: `Hold Pristine — ${daysToWin} day${daysToWin !== 1 ? 's' : ''} to win.`,
+    action: { label: 'Advance Day', do: 'endday' },
+  };
+}
+
+/**
+ * renderCaptainBar(state) — create/update the #captain-bar DOM element.
+ * Called every render tick. Never replaces the canvas (Law 1).
+ */
+function renderCaptainBar(state) {
+  const container = document.getElementById('game-container');
+  if (!container) return;
+
+  let bar = document.getElementById('captain-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'captain-bar';
+    container.appendChild(bar);
+  }
+
+  // Don't render while a modal overlay (win card, start card, etc.) is visible
+  if (!overlay.hidden) {
+    bar.hidden = true;
+    setGuidedTile(null);
+    return;
+  }
+  // Don't render if world isn't ready
+  if (!state?.world?.tiles) {
+    bar.hidden = true;
+    return;
+  }
+
+  const guidance = computeNextGuidance(state);
+  if (!guidance) {
+    bar.hidden = true;
+    setGuidedTile(null);
+    return;
+  }
+
+  // Update guided tile highlight in the canvas
+  const rec = getTopRecommendation(state);
+  if (rec && guidance.icon === '📍') {
+    setGuidedTile(rec.targetTileId ?? null);
+  } else {
+    setGuidedTile(null);
+  }
+
+  const btnHTML = guidance.action
+    ? `<button class="coach-btn" data-coach-action="${escapeAttr(guidance.action.do)}"
+         data-tool-type="${escapeAttr(guidance.action.toolType ?? '')}"
+       >${escapeHTML(guidance.action.label)}</button>`
+    : '';
+
+  bar.innerHTML = `
+    <span class="coach-icon">${guidance.icon}</span>
+    <span class="coach-text">${escapeHTML(guidance.text)}</span>
+    ${btnHTML}
+  `;
+  bar.hidden = false;
+}
+
+// ── Captain's bar click delegation ─────────────────────────────────────────
+document.addEventListener('click', async (e) => {
+  const btn    = e.target.closest('[data-coach-action]');
+  const action = btn?.dataset?.coachAction;
+  if (!action) return;
+
+  switch (action) {
+
+    case 'guided-intervene': {
+      _unlockAudio();
+      const toolType = btn.dataset.toolType;
+      if (!toolType) break;
+      const result = applyIntervention(toolType, GameState);
+      if (result.ok) {
+        if (result.warned) {
+          showToast(result.message.split('\n').filter(Boolean).pop(), 'warning', 5200);
+        } else {
+          showToast(result.message.split('\n')[0], 'success', 4000);
+        }
+        if (toolType === 'bioremediation') {
+          playInterveneChime();
+          pingCleanEffect(GameState.player.tile_x, GameState.player.tile_y);
+        }
+      } else {
+        showToast(result.message, 'warning');
+      }
+      checkEndCondition();
+      break;
+    }
+
+    case 'endday': {
+      if (GameState.flags.win || GameState.flags.lose) break;
+      _unlockAudio();
+      const prevHealth = GameState.meta.ecosystem_health;
+      const prevTier   = GameState.meta.market_tier;
+      runDailyStep(GameState);
+      updateTier(GameState);
+      const newDay    = GameState.meta.day_count;
+      const newHealth = GameState.meta.ecosystem_health;
+      const newTier   = GameState.meta.market_tier;
+      showDayResultBanner(prevHealth, newHealth, newDay);
+      setHealthAudio(newHealth);
+      const _TIER_ORDER_C = { Toxic: 0, Degraded: 1, Recovering: 2, Pristine: 3 };
+      if ((_TIER_ORDER_C[newTier] ?? 0) > (_TIER_ORDER_C[prevTier] ?? 0)) {
+        playTierUp();
+        flashCanvas(300);
+        setTimeout(() => showToast(`🌿 Ecosystem improved: ${prevTier} → ${newTier}`, 'success', 3000), 120);
+      }
+      if (GameState.flags.win) playWinSting();
+      if (GameState.player.scanner_charges === 0) {
+        GameState.player.scanner_charges = 5;
+        GameState.save();
+        setTimeout(() => showToast('⚡ Scanner recharged — 5 new scouting charges.', 'success', 2500), 800);
+      }
+      setTimeout(checkEndCondition, 400);
+      break;
+    }
+
+    case 'new-seed': {
+      _unlockAudio();
+      const freshSeed = Math.max(1, Date.now() % 999999 || 1);
+      await newGame(freshSeed, GameState.meta.biome_template);
+      break;
+    }
+
+    default: break;
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Start card
 // ─────────────────────────────────────────────────────────────────────────────
 
 function showStartCard() {
   const defaultSeed = Math.floor(Date.now() % 9999) + 1;
+  const biomeBtn = (key, label) =>
+    `<button class="start-biome-btn${_selectedBiome === key ? ' selected' : ''}" data-action="pick-biome" data-biome="${key}">${label}</button>`;
   showOverlay(`
     <div class="start-card-outer" style="--keyart-url: url('assets/images/keyart.png')"
          role="document">
       <div class="start-card-inner">
+        <div class="start-biome-row">
+          ${biomeBtn('coastal_wetland', '🌿 Coastal Wetland')}
+          ${biomeBtn('coral_reef', '🐠 Coral Reef')}
+        </div>
         <div class="start-seed-row">
           <label for="seed-input">Seed</label>
-          <input id="seed-input" type="number" min="1" max="999999"
-                 value="${defaultSeed}">
-          <span class="seed-hint">(same seed = same world)</span>
+          <input id="seed-input" type="number" min="1" max="999999" value="${defaultSeed}">
         </div>
-        <button class="start-begin-btn" data-action="newgame">
-          Begin Field Assignment
-        </button>
-        <p class="start-controls-hint">
-          🖱 Click tile to move &nbsp;·&nbsp;
-          ⌨ WASD / arrows &nbsp;·&nbsp;
-          Walk near species to discover
-        </p>
+        <button class="start-begin-btn" data-action="newgame">Begin</button>
+        <p class="start-controls-hint">Move: WASD / arrows / click · Walk near wildlife to scan it</p>
       </div>
     </div>
   `);
@@ -274,8 +521,7 @@ function showWinCard() {
   showOverlay(`
     <div class="panel card win-card" role="document">
       <h1 style="color:#1a9e6b;">✦ BIOME RESTORED ✦</h1>
-      <p>The coastal wetland has reached <strong>Pristine</strong> health<br>
-         and held stable for 3 consecutive days.</p>
+      <p>The ${escapeHTML(GameState.meta.biome_name ?? 'ecosystem')} reached <strong>Pristine</strong> health, held for 3 days.</p>
 
       <div style="display:flex;align-items:center;gap:14px;margin:14px 0 6px;">
         <span style="
@@ -364,14 +610,20 @@ function showDayResultBanner(prevHealth, newHealth, dayCount) {
 // New game generation
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function newGame(seed) {
+/** Currently-selected biome for the next new game (set on the start card). */
+let _selectedBiome = 'coastal_wetland';
+
+async function newGame(seed, biomeKey = _selectedBiome) {
   showOverlay(`<div class="panel card"><h1>Generating World…</h1><p>Seed: ${escapeHTML(seed)}</p></div>`);
   await new Promise(r => setTimeout(r, 50));
 
   try {
     const biomes   = await loadBiomeTemplate();
-    const template = biomes['coastal_wetland'];
+    const template = biomes[biomeKey] ?? biomes['coastal_wetland'];
     GameState.reset();
+    GameState.meta.biome_template = biomeKey;
+    GameState.meta.biome_name     = template.displayName ?? 'ecosystem';
+    GameState.meta.collapse_timer = template.collapseTimer ?? 45;  // per-biome clock
     _proximityDiscovered.clear(); // reset session discovery tracker for new world
     generateWorld(template, seed, GameState);
 
@@ -496,31 +748,38 @@ overlay.addEventListener('click', async (e) => {
       break;
     }
 
+    // ── Start card: pick a biome (re-render to update the highlight) ───────
+    case 'pick-biome': {
+      _selectedBiome = btn.dataset.biome === 'coral_reef' ? 'coral_reef' : 'coastal_wetland';
+      showStartCard();
+      break;
+    }
+
     // ── Start / Retry ─────────────────────────────────────────────────────
     case 'newgame': {
       // First user gesture — unlock audio context (browser autoplay policy)
       _unlockAudio();
       const seedInput = document.getElementById('seed-input');
       const seed = Math.max(1, parseInt(seedInput?.value || '1', 10));
-      await newGame(seed);
+      await newGame(seed, _selectedBiome);
       break;
     }
 
-    // ── Win/lose card: brand-new run with a fresh seed ─────────────────────
+    // ── Win/lose card: brand-new run with a fresh seed (same biome) ────────
     case 'new-seed': {
       _unlockAudio();
       // UI input — Date.now() used ONLY to pick the seed, not in sim/generation
       const freshSeed = Math.max(1, Date.now() % 999999 || 1);
-      await newGame(freshSeed);
+      await newGame(freshSeed, GameState.meta.biome_template);
       break;
     }
 
-    // ── Win/lose card: replay the exact same world ─────────────────────────
+    // ── Win/lose card: replay the exact same world (same biome) ────────────
     case 'retry-seed': {
       _unlockAudio();
       // seed stored in data-seed attribute, set when the card was rendered
       const replaySeed = Math.max(1, parseInt(btn.dataset.seed || '1', 10));
-      await newGame(replaySeed);
+      await newGame(replaySeed, GameState.meta.biome_template);
       break;
     }
 
@@ -755,6 +1014,7 @@ function startRenderLoop() {
     _checkProximityDiscovery(GameState);
 
     render(GameState, ctx, timestamp);
+    renderCaptainBar(GameState);
     rafId = requestAnimationFrame(tick);
   }
 

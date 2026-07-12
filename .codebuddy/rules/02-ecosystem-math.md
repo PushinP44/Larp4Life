@@ -213,6 +213,72 @@ h.     state.resetDay(); state.save()
 
 ---
 
+## H. Web enrichment — trade-off + competition (depth passes #2/#3)
+
+### #2 Trade-off — the invasive is the predator's food (coupled consequence)
+When an invasive is generated, a SECOND edge `n_invasive → <apex predator>` is added (`predatorBetaBand [0.010,0.020]`) — the stork feeds on the tilapia too. This makes over-culling a **losing** move:
+
+- In `processStressors`, for each active invasive stressor: if the invasive is culled to near-zero (`P_inv/K_max < INVASIVE_STARVE_FLOOR`) **while** its prey is still scarce (`P_prey/K_max < TRADEOFF_PREY_SAFE`), the predator suffers a starve penalty.
+- The penalty is applied as a **clamped action term** (`actionsThisStep[predator] += HERON_STARVE_PENALTY`) so it respects the ±0.35·P envelope — no clamp-bypass, no delta-violation, no harness exemption needed.
+- **Winning line:** restore the prey's habitat FIRST (raise prey ≥ 0.45 rel), THEN finish the cull. "Cull max every day" starves the keystone.
+
+```
+TRADEOFF_PREY_SAFE    = 0.45   INVASIVE_STARVE_FLOOR = 0.20   HERON_STARVE_PENALTY = 6
+```
+Greedy/validator rule: only cull when `preyRel ≥ 0.45`. Verified: naive cull-max → 0 wins; smart restore-first → 100%.
+
+### #3 Competition — a 5th native grazing the shared producer
+A permanent native `n_crab` (Mud Crab, consumer, low `weight [0.5,0.8]`) grazes the same producer as the shrimp via edge `n_seagrass → n_crab` (`betaBand [0.04,0.07]`, `r [0.17,0.24]`, `K_max [200,340]`). Combined grazing pressure on the shared seagrass means a booming crab thins the meadow faster than it regrows — **suppressing the shrimp 15–39% under clean water** (non-obvious diagnosis). Resolved by boosting the shared resource (bioremediate the seagrass), NOT a new lever. No engine change — pure food-web edge + node.
+
+**Verified (passes #2+#3):** 100% optimal-winnable, 100% optimal / 99.7% handicapped, 0 NaN, 0 Δ-violations, deterministic, pacing 1.48, first-seed-valid 92.8%.
+
+---
+
+## I. Escalation — unaddressed runoff accelerates (depth pass #4)
+
+Runoff pollution intensifies the longer its source is left uncleaned, and reverses once bioremediated —
+a "rising tide" that rewards fast root-cause action and punishes dawdling. Tile-L based → no
+population-clamp interaction, no delta-violation risk.
+
+In `processStressors` (runoff branch), per day, on the descriptor `s.escalation` (init 0):
+```
+if (sourceTile L ≥ 10):  s.escalation = min(RUNOFF_ESCALATION_MAX, s.escalation + RUNOFF_ESCALATION_RATE)
+else (source cleaned):   s.escalation = max(0, s.escalation − RUNOFF_ESCALATION_DECAY); stop spreading
+effectiveSpread = spreadRate × (1 + s.escalation)
+```
+```
+RUNOFF_ESCALATION_RATE = 0.06   RUNOFF_ESCALATION_MAX = 0.80 (→ up to ×1.8 spread)   DECAY = 0.15
+```
+Guard: coerce `s.escalation` to 0 if non-finite (tampered save). **Teeth (verified):** ignoring the source
+ramps escalation 0→0.8 and roughly 2.6× the total map pollution vs cleaning it on day 1. Diagnosis UI warns
+"bloom is ACCELERATING — ×N faster" once escalation > 0.2. Harness stays 100% / 99.6% handicapped.
+
+---
+
+## J. Multiple biomes + per-biome clock (depth pass #5)
+
+`data/biomes.json` holds MULTIPLE templates; the engine is biome-agnostic. Each template has `id`,
+`displayName`, `collapseTimer`, `nodes` (with `kind`), `edges`, `start`, `stressorPool`, and a `defaults`
+fallback world. The renderer/generator read structurally (`kind === 'producer'|'consumer'|'predator'|
+'stressor'`, `template.nodes.find(...)`) — never by hardcoded id. Adding a biome = data + art, no engine change.
+
+- **Per-biome timer:** `state.meta.collapse_timer = template.collapseTimer ?? 45`. Wetland **45**, reef **52**
+  (a fragile biome earns a longer restoration window). The harness reads `TEMPLATE.collapseTimer` and the
+  pacing window `[0.30–0.65]×timer` scales with it. Replays keep the biome (`GameState.meta.biome_template`).
+- **coral_reef** (shipped): coral (producer, keystone) · parrotfish (consumer) · sea urchin (consumer,
+  competitor) · blacktip reef shark (predator, keystone) · lionfish (invasive) · sediment plume (stressor).
+  Distinct **feel via fragility**: coral `alpha [0.90,1.25]` (sediment-sensitive → bleaches hard) with `r`
+  kept near-normal so pacing holds. Invasive combos run tighter (0.62–0.63×) than the wetland's (0.49–0.53×).
+- **Art is biome-agnostic by lookup:** invasive sprite resolves by node NAME (`Lionfish→sprite_lionfish`,
+  `Mozambique Tilapia→sprite_tilapia`); tiles remap on reef (`water→reefwater, marsh→sand, land→reef,
+  source→sediment`); props via `_PROP_NAMES[biome]`; codex prefers name-key then id. Missing art degrades to
+  the neutral procedural fallback (no cross-biome bleed).
+
+**Verified (both biomes, ALL GATES PASSED):** wetland 100% / 99.6% handicapped @ timer 45;
+reef 100% / 99.3% handicapped @ timer 52; both deterministic, 0 NaN, 0 Δ-violations.
+
+---
+
 ## G. Validated test cases (run before each commit; headless harness in Phase 1)
 ```javascript
 // 1. Carrying capacity collapses for fragile keystone

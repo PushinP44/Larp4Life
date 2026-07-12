@@ -500,6 +500,14 @@ html, body {
   opacity: 0.55;
   font-style: italic;
 }
+.diag-caution {
+  font-size: 0.8em;
+  color: var(--danger);
+  margin-top: 5px;
+  line-height: 1.4;
+  border-top: 1px dashed rgba(192, 57, 43, 0.4);
+  padding-top: 5px;
+}
 
 .nb-edge-list {
   display: flex;
@@ -836,6 +844,32 @@ html, body {
 }
 
 /* Seed row inside start card */
+.start-biome-row {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.start-biome-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cfe;
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.start-biome-btn:hover { border-color: var(--accent); }
+.start-biome-btn.selected {
+  border-color: var(--accent);
+  background: rgba(240, 165, 0, 0.18);
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .start-seed-row {
   display: flex;
   align-items: center;
@@ -921,6 +955,70 @@ html, body {
 
 .win-card h1  { color: #1a9e6b; }
 .lose-card h1 { color: var(--danger); }
+
+/* ── Captain's Orders coach bar ──────────────────────────────────────────────
+ * Pinned inside #game-container, below the top HUD (var(--hud-height)).
+ * Non-blocking: pointer-events on the bar only; the canvas underneath stays live.
+ * Never covers the canvas chrome — it is an overlay HUD element (Law 1).
+ */
+#captain-bar {
+  position: absolute;
+  top: calc(var(--hud-height) + 4px);  /* just below the top HUD */
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  background: rgba(10, 14, 20, 0.88);
+  border: 1px solid rgba(240, 165, 0, 0.40);
+  border-radius: 6px;
+  font-family: var(--font-main);
+  font-size: 0.82em;
+  color: var(--text-light);
+  white-space: nowrap;
+  max-width: min(520px, 90vw);
+  z-index: 15;           /* above canvas (z-index:0), below overlay (z-index:10)... */
+  pointer-events: auto;  /* ...but we need clicks for the button */
+  box-shadow: 0 2px 8px rgba(0,0,0,0.45);
+}
+
+#captain-bar[hidden] { display: none; }
+
+.coach-icon {
+  font-size: 1.05em;
+  flex-shrink: 0;
+}
+
+.coach-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+  color: var(--text-light);
+}
+
+.coach-btn {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: rgba(240, 165, 0, 0.12);
+  color: var(--accent);
+  font-family: var(--font-main);
+  font-size: 0.85em;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.coach-btn:hover,
+.coach-btn:focus {
+  background: var(--accent);
+  color: var(--bg-dark);
+  outline: none;
+}
 
 /* ── Scrollbar styling (webkit) ────────────────────────────────────────────── */
 ::-webkit-scrollbar {

@@ -14,6 +14,7 @@
 
 import { getAICodexEntry } from './ai_content.js';
 import { escapeHTML } from './safehtml.js';
+import { getPricedCost } from './hysteria.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Kind → display label + colour
@@ -61,7 +62,9 @@ function nodeCardHTML(node, state) {
     ? Math.round((node.population / node.K_max) * 100)
     : 0;
 
-  const codex  = getAICodexEntry(node.id);
+  // Prefer name-keyed codex (lets biomes share a node id like n_invasive but show
+  // different entries — e.g. Mozambique Tilapia vs Lionfish), fall back to id.
+  const codex  = getAICodexEntry(node.name) || getAICodexEntry(node.id);
   const codexHTML = codex
     ? `<p class="nb-codex">"${escapeHTML(codex)}"</p>`
     : '';
@@ -122,6 +125,88 @@ function edgesHTML(state) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// getTopRecommendation — shared diagnosis helper (also used by the coach HUD)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * getTopRecommendation(state)
+ *
+ * Returns the single highest-priority actionable recommendation, or null if
+ * there is nothing diagnosable yet.
+ *
+ * @param {object} state — GameState (read-only)
+ * @returns {{ cause: string, toolType: string, targetTileId?: string,
+ *             targetNodeId?: string, cost: number } | null}
+ */
+export function getTopRecommendation(state) {
+  const stressors  = state.world.activeStressors ?? [];
+  const nodes      = state.world.nodes;
+  const tiles      = state.world.tiles;
+  const discovered = new Set(state.notebook.discovered_nodes);
+
+  for (const s of stressors) {
+    if (s.type === 'runoff') {
+      const polluted = Object.values(tiles).filter(t => (t.stressor ?? 0) >= 40);
+      if (polluted.length > 0) {
+        // Target the source tile (highest stressor level)
+        const sourceTile = polluted.reduce((a, b) =>
+          (b.stressor ?? 0) > (a.stressor ?? 0) ? b : a);
+        const tileId = sourceTile.id ?? s.sourceTileId;
+        return {
+          cause: 'Pollution',
+          toolType: 'bioremediation',
+          targetTileId: tileId,
+          cost: getPricedCost('bioremediation', state),
+        };
+      }
+    } else if (s.type === 'invasive') {
+      const inv = Object.values(nodes).find(n => n.kind === 'invasive');
+      if (inv && discovered.has(inv.id)) {
+        return {
+          cause: 'Invasive species',
+          toolType: 'rebalancing',
+          targetTileId: inv.tileId,
+          targetNodeId: inv.id,
+          cost: getPricedCost('rebalancing', state),
+        };
+      }
+    } else if (s.type === 'overharvest') {
+      const target = nodes[s.targetNative];
+      if (target && discovered.has(s.targetNative)) {
+        return {
+          cause: 'Overharvesting',
+          toolType: 'stabilization',
+          targetTileId: target.tileId,
+          targetNodeId: target.id,
+          cost: getPricedCost('stabilization', state),
+        };
+      }
+    }
+  }
+
+  // Competition secondary recommendation
+  const producer  = Object.values(nodes).find(n => n.kind === 'producer');
+  const consumers = Object.values(nodes).filter(n => n.kind === 'consumer')
+                      .sort((a, b) => (a.weight ?? 1) - (b.weight ?? 1));
+  if (producer && consumers.length >= 2) {
+    const competitor = consumers[0];
+    const primary    = consumers[consumers.length - 1];
+    if (discovered.has(competitor.id) && discovered.has(primary.id) &&
+        competitor.K_max > 0 && (competitor.population / competitor.K_max) >= 0.30) {
+      return {
+        cause: 'Competition',
+        toolType: 'bioremediation',
+        targetTileId: producer.tileId,
+        targetNodeId: producer.id,
+        cost: getPricedCost('bioremediation', state),
+      };
+    }
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // openNotebook(state) — public API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -147,27 +232,38 @@ function buildDiagnosisHTML(state) {
   const symptoms   = [];
   let pending      = 0; // active causes whose evidence isn't gathered yet
 
+  // ── Reuse the shared helper so coach and panel never disagree ──────────────
+  // We still enumerate all stressors for the full panel view; getTopRecommendation
+  // returns only the single highest-priority one (used by the coach).
+
   for (const s of stressors) {
     if (s.type === 'runoff') {
       // Pollution is directly observable on the map (toxic tiles).
       const polluted = Object.values(tiles).filter(t => (t.stressor ?? 0) >= 40);
       if (polluted.length > 0) {
         const maxL = Math.round(Math.max(...polluted.map(t => t.stressor)));
+        const esc = s.escalation ?? 0;
         symptoms.push({
-          icon: '☣', title: 'Nutrient pollution', tool: 'bioremediation',
-          evidence: `${polluted.length} tile(s) contaminated — stressor up to ${maxL}, spreading from a source.`,
-          action: 'Bioremediate the SOURCE tile — cleaning it stops the spread.',
+          icon: '☣', title: 'Pollution', tool: 'bioremediation',
+          evidence: `Spreading from a source — up to L ${maxL} on ${polluted.length} tile(s).`,
+          action: 'Bioremediate the SOURCE tile.',
+          caution: esc > 0.2 ? `Accelerating — now ${(1 + esc).toFixed(1)}× faster. Clean the source NOW.` : null,
         });
       } else pending++;
     } else if (s.type === 'invasive') {
       const inv = Object.values(nodes).find(n => n.kind === 'invasive');
       if (inv && discovered.has(inv.id)) {
-        const edge   = state.world.edges.find(e => e.from === inv.id && e.revealed);
-        const target = edge ? nodes[edge.to] : nodes[s.targetNative];
+        // target = the invasive's PREY (from the stressor def), not any edge — the
+        // invasive now has two outgoing edges (→prey and →predator trade-off).
+        const target   = nodes[s.targetNative];
+        const predator = Object.values(nodes).find(n => n.kind === 'predator');
         symptoms.push({
           icon: '🦠', title: 'Invasive species', tool: 'rebalancing',
-          evidence: `${inv.name}${trendChar(inv)} is established and multiplying${target ? `, suppressing ${target.name}${trendChar(target)}` : ''}.`,
-          action: `Cull ${inv.name} (Rebalancing) — repeated culls drive it out.`,
+          evidence: `${inv.name}${trendChar(inv)} multiplying${target ? `, suppressing ${target.name}${trendChar(target)}` : ''}.`,
+          action: `Restore ${target ? target.name : 'the prey'} first, then cull ${inv.name}.`,
+          caution: predator
+            ? `${predator.name} also eats ${inv.name} — don't over-cull while ${target ? target.name : 'the prey'} is scarce, or it starves.`
+            : null,
         });
       } else pending++;
     } else if (s.type === 'overharvest') {
@@ -175,10 +271,29 @@ function buildDiagnosisHTML(state) {
       if (target && discovered.has(s.targetNative)) {
         symptoms.push({
           icon: '🎣', title: 'Overharvesting', tool: 'stabilization',
-          evidence: `${target.name}${trendChar(target)} is being depleted faster than it can breed, with no predator surge to explain it — an external removal pressure.`,
-          action: `Protect ${target.name}'s habitat (Stabilization) to stop the drain.`,
+          evidence: `${target.name}${trendChar(target)} depleted — clean water, no predator. External removal.`,
+          action: `Protect ${target.name}'s tile (Stabilization).`,
         });
       } else pending++;
+    }
+  }
+
+  // Competition insight (#3): the Mud Crab and the shrimp graze the same seagrass.
+  // Surface it when both are discovered and the crab is abundant enough to bite —
+  // the resolution is the shared resource (restore the seagrass), not a cull.
+  const producer  = Object.values(nodes).find(n => n.kind === 'producer');
+  const consumers = Object.values(nodes).filter(n => n.kind === 'consumer')
+                      .sort((a, b) => (a.weight ?? 1) - (b.weight ?? 1));
+  if (producer && consumers.length >= 2) {
+    const competitor = consumers[0];                    // lowest weight = the grazing competitor
+    const primary    = consumers[consumers.length - 1]; // highest weight = the species we care about
+    if (discovered.has(competitor.id) && discovered.has(primary.id) &&
+        competitor.K_max > 0 && (competitor.population / competitor.K_max) >= 0.30) {
+      symptoms.push({
+        icon: '🦀', title: 'Competition', tool: 'bioremediation',
+        evidence: `${competitor.name}${trendChar(competitor)} and ${primary.name}${trendChar(primary)} both graze the ${producer.name} — a booming ${competitor.name} starves the ${primary.name}.`,
+        action: `Restore the ${producer.name} (bioremediation) — it feeds both.`,
+      });
     }
   }
 
@@ -195,6 +310,7 @@ function buildDiagnosisHTML(state) {
         </div>
         <p class="diag-evidence">${escapeHTML(s.evidence)}</p>
         <div class="diag-action">↳ ${escapeHTML(s.action)}</div>
+        ${s.caution ? `<div class="diag-caution">⚠ ${escapeHTML(s.caution)}</div>` : ''}
       </div>`).join('');
     if (pending) {
       body += `<p class="diag-empty">…another cause may still be hidden — keep investigating.</p>`;

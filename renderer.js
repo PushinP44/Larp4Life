@@ -337,8 +337,24 @@ function drawTileGrid(state, ctx, metrics, timestamp = 0) {
       ? 'source'
       : tileTypeFromNoise(seed, tx, ty);
 
-    const spriteHealthy = getSprite(`tile_${type}`);
-    const spriteToxic   = getSprite(`tile_${type}_toxic`);
+    // ── Biome-aware tile key ─────────────────────────────────────────────
+    // On coral_reef, map wetland types to reef equivalents before the lookup.
+    // Wetland worlds: tileKey === type (byte-identical to previous behaviour).
+    // Reef worlds: each type maps to a reef-specific art name; if the PNG is
+    // absent the existing procedural flat-colour fallback fires — we do NOT fall
+    // back to the wetland sprites (mixing grass art into a reef would look wrong).
+    let tileKey = type;
+    if (state.meta.biome_template === 'coral_reef') {
+      switch (type) {
+        case 'water':  tileKey = 'reefwater'; break;
+        case 'marsh':  tileKey = 'sand';      break;
+        case 'land':   tileKey = 'reef';      break;
+        case 'source': tileKey = 'sediment';  break;
+        // unknown future types: fall through to tileKey === type
+      }
+    }
+    const spriteHealthy = getSprite(`tile_${tileKey}`);
+    const spriteToxic   = getSprite(`tile_${tileKey}_toxic`);
 
     if (spriteHealthy) {
       // ── Sprite path ──────────────────────────────────────────────────
@@ -436,8 +452,28 @@ function nodeColor(kind) {
  * Maps node.id to its sprite names.
  * Convention: node ids are 'n_seagrass', 'n_shrimp', 'n_heron', 'n_runoff'.
  * Strip the 'n_' prefix to get the sprite suffix.
+ *
+ * Special case — kind === 'invasive': sprite is resolved from node.name so
+ * each biome's invasive gets distinct art without changing its node id:
+ *   'Mozambique Tilapia' → 'sprite_tilapia'
+ *   'Lionfish'           → 'sprite_lionfish'
+ *   (unknown)            → generic 'sprite_${suffix}' (forward-compat fallback)
+ * Invasive nodes have no dedicated extinct variant — healthy key is reused for
+ * any fallback rendering; the renderer already handles a missing extinct gracefully.
  */
 function _spriteKeyForNode(node) {
+  if (node.kind === 'invasive') {
+    let healthyKey;
+    switch (node.name) {
+      case 'Mozambique Tilapia': healthyKey = 'sprite_tilapia';  break;
+      case 'Lionfish':           healthyKey = 'sprite_lionfish'; break;
+      default: {
+        const suffix = node.id.replace(/^n_/, '');
+        healthyKey = `sprite_${suffix}`;
+      }
+    }
+    return { healthy: healthyKey, extinct: `${healthyKey}_extinct` };
+  }
   const suffix = node.id.replace(/^n_/, '');
   return {
     healthy: `sprite_${suffix}`,
@@ -1483,6 +1519,39 @@ export function flashCanvas(durationMs = 300) {
   _flashUntil = performance.now() + durationMs;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Guided-tile highlight — captain's coach pulsing outline
+// Set by main.js when the coach wants the player to walk to a specific tile.
+// Cleared (null) when the player is on that tile or the cause is resolved.
+// ─────────────────────────────────────────────────────────────────────────────
+let _guidedTileId = null;
+
+/**
+ * setGuidedTile(tileId) — register a tile to receive a pulsing guide outline.
+ * Pass null to clear.
+ * @param {string|null} tileId
+ */
+export function setGuidedTile(tileId) {
+  _guidedTileId = tileId ?? null;
+}
+
+function drawGuidedTile(state, ctx, metrics, timestamp) {
+  if (!_guidedTileId) return;
+  const tile = state.world?.tiles?.[_guidedTileId];
+  if (!tile) return;
+  const { x, y, w, h } = tilePx(_guidedTileId, state, metrics);
+  const pulse = 0.55 + 0.45 * Math.sin(timestamp / 320); // 0.1 → 1.0, ~2 Hz
+  ctx.save();
+  ctx.strokeStyle = `rgba(240, 165, 0, ${pulse})`;
+  ctx.lineWidth   = 2.5;
+  ctx.setLineDash([5, 3]);
+  ctx.shadowColor  = 'rgba(240, 165, 0, 0.6)';
+  ctx.shadowBlur   = 8;
+  ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
 function drawCanvasFlash(ctx, cssW, cssH, timestamp) {
   if (timestamp >= _flashUntil) return;
   const age   = _flashMs - (_flashUntil - timestamp);
@@ -1539,10 +1608,47 @@ function drawScanRipples(ctx, metrics, timestamp) {
 // accents. Skips node tiles + the stressor source. Drawn through the biome filter
 // so props desaturate with the wetland's health.
 // ─────────────────────────────────────────────────────────────────────────────
-let _propCache = { seed: null, items: null };
+// ── Biome-keyed prop-name table ───────────────────────────────────────────────
+// Each slot maps to the sprite name used in that biome.  The wetland column is
+// the original hardcoded literal — byte-identical to the previous behaviour.
+// For unknown biomes the wetland set is used as the default.
+// Rule 01: if a reef prop sprite is absent, drawProps skips it (spr === null →
+// continue).  We do NOT fall back to the wetland sprite — an empty reef is
+// correct until art lands.
+const _PROP_NAMES = {
+  coastal_wetland: {
+    water:  'prop_lilypad',
+    reed:   'prop_reeds',
+    tree:   'prop_tree',
+    bush:   'prop_bush',
+    grass:  'prop_grass',
+    flower: 'prop_flowers',
+    rock:   'prop_rock',
+    stump:  'prop_stump',
+  },
+  coral_reef: {
+    water:  'prop_anemone',
+    reed:   'prop_kelp',
+    tree:   'prop_coral',
+    bush:   'prop_coralhead',
+    grass:  'prop_algae',
+    flower: 'prop_starfish',
+    rock:   'prop_rock',    // shared — rocks exist on reefs
+    stump:  'prop_shell',
+  },
+};
+
+// Cache is keyed by BOTH seed and biome so that switching biomes on the same
+// seed never returns stale props (Fix: previously keyed on seed only).
+let _propCache = { seed: null, biome: null, items: null };
 
 function _propItems(state, seed) {
-  if (_propCache.seed === seed && _propCache.items) return _propCache.items;
+  const biome = state.meta.biome_template ?? 'coastal_wetland';
+  if (_propCache.seed === seed && _propCache.biome === biome && _propCache.items) return _propCache.items;
+
+  // Resolve the active prop-name set (default to wetland for unknown biomes)
+  const P = _PROP_NAMES[biome] ?? _PROP_NAMES.coastal_wetland;
+
   const items = [];
   const nodeTiles = new Set(Object.values(state.world.nodes).map(n => n.tileId));
   for (const [tileId, tile] of Object.entries(state.world.tiles)) {
@@ -1558,21 +1664,23 @@ function _propItems(state, seed) {
     const ox = hash3(seed, tx * 13 + 5, ty * 17 + 6) - 0.5;
     const oy = hash3(seed, tx * 19 + 7, ty * 23 + 8) - 0.5;
 
+    // Selection logic is BYTE-IDENTICAL to before — only the resolved names
+    // come from the active biome set instead of hardcoded literals.
     let prop = null, sizeFrac = 0.6, sway = false;
     if (type === 'water') {
-      if (a < 0.22) { prop = 'prop_lilypad'; sizeFrac = 0.70; }
+      if (a < 0.22) { prop = P.water;  sizeFrac = 0.70; }
     } else {
       const nearWater =
         typeAtTile(state, seed, tx + 1, ty) === 'water' || typeAtTile(state, seed, tx - 1, ty) === 'water' ||
         typeAtTile(state, seed, tx, ty + 1) === 'water' || typeAtTile(state, seed, tx, ty - 1) === 'water';
-      if (nearWater && a < 0.50) { prop = 'prop_reeds'; sizeFrac = 0.78; sway = true; }
+      if (nearWater && a < 0.50) { prop = P.reed;   sizeFrac = 0.78; sway = true; }
       else if (a < 0.46) {
-        if      (b < 0.12) { prop = 'prop_tree';    sizeFrac = 1.15; }
-        else if (b < 0.34) { prop = 'prop_bush';    sizeFrac = 0.72; }
-        else if (b < 0.66) { prop = 'prop_grass';   sizeFrac = 0.50; sway = true; }
-        else if (b < 0.82) { prop = 'prop_flowers'; sizeFrac = 0.50; }
-        else if (b < 0.93) { prop = 'prop_rock';    sizeFrac = 0.62; }
-        else               { prop = 'prop_stump';   sizeFrac = 0.66; }
+        if      (b < 0.12) { prop = P.tree;   sizeFrac = 1.15; }
+        else if (b < 0.34) { prop = P.bush;   sizeFrac = 0.72; }
+        else if (b < 0.66) { prop = P.grass;  sizeFrac = 0.50; sway = true; }
+        else if (b < 0.82) { prop = P.flower; sizeFrac = 0.50; }
+        else if (b < 0.93) { prop = P.rock;   sizeFrac = 0.62; }
+        else               { prop = P.stump;  sizeFrac = 0.66; }
       }
     }
     if (prop) items.push({
@@ -1583,7 +1691,7 @@ function _propItems(state, seed) {
       alpha: 0.82 + 0.18 * hash3(seed, tx * 37 + 1, ty * 41 + 2), // subtle brightness variance
     });
   }
-  _propCache = { seed, items };
+  _propCache = { seed, biome, items };
   return items;
 }
 
@@ -1651,6 +1759,9 @@ export function render(state, ctx, timestamp = 0) {
 
   // ── Layer 1.5: Decorative props (under nodes/agent) ─────────────────────────
   drawProps(state, ctx, metrics, timestamp);
+
+  // ── Layer 1.6: Guided-tile coach outline (above props, below sprites) ────────
+  drawGuidedTile(state, ctx, metrics, timestamp);
 
   // ── Layer 2: Node sprites ─────────────────────────────────────────────────
   drawNodes(state, ctx, metrics, timestamp);

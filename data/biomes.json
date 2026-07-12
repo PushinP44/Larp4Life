@@ -1,5 +1,8 @@
 {
   "coastal_wetland": {
+    "id": "coastal_wetland",
+    "displayName": "coastal wetland",
+    "collapseTimer": 45,
     "grid": { "w": 16, "h": 12 },
 
     "nodes": [
@@ -40,6 +43,18 @@
         }
       },
       {
+        "id": "n_crab",
+        "kind": "consumer",
+        "name": "Mud Crab",
+        "keystone": false,
+        "bands": {
+          "r":     [0.17, 0.24],
+          "K_max": [200,  340],
+          "alpha": [1.0,  1.5],
+          "weight": [0.5, 0.8]
+        }
+      },
+      {
         "id": "n_heron",
         "kind": "predator",
         "name": "Painted Stork",
@@ -56,6 +71,7 @@
     "edges": [
       { "from": "n_runoff",  "to": "n_seagrass", "betaBand": [0,    0   ] },
       { "from": "n_seagrass","to": "n_shrimp",   "betaBand": [0.02, 0.05] },
+      { "from": "n_seagrass","to": "n_crab",     "betaBand": [0.04, 0.07] },
       { "from": "n_shrimp",  "to": "n_heron",    "betaBand": [0.03, 0.06] }
     ],
 
@@ -83,6 +99,7 @@
           "weight": [0,    0]
         },
         "betaBand": [0.020, 0.035],
+        "predatorBetaBand": [0.010, 0.020],
         "populationFrac": [0.15, 0.25]
       },
       {
@@ -146,6 +163,70 @@
           "spreadRate": 4
         }
       ]
+    }
+  },
+
+  "coral_reef": {
+    "id": "coral_reef",
+    "displayName": "coral reef",
+    "collapseTimer": 52,
+    "grid": { "w": 16, "h": 12 },
+
+    "nodes": [
+      { "id": "n_sediment", "kind": "stressor", "name": "Sediment Plume", "keystone": false,
+        "bands": { "r": [0,0], "K_max": [0,0], "alpha": [0,0], "weight": [0,0] } },
+      { "id": "n_coral", "kind": "producer", "name": "Reef-building Coral", "keystone": true,
+        "_feel": "FRAGILE via SENSITIVITY: high alpha → coral K collapses hard under sediment (bleaches fast); regrowth (r) kept near-normal so pacing stays in window",
+        "bands": { "r": [0.19,0.26], "K_max": [400,600], "alpha": [0.90,1.25], "weight": [2,3] } },
+      { "id": "n_parrotfish", "kind": "consumer", "name": "Parrotfish", "keystone": false,
+        "bands": { "r": [0.17,0.24], "K_max": [250,400], "alpha": [1.2,1.8], "weight": [1,1.5] } },
+      { "id": "n_urchin", "kind": "consumer", "name": "Sea Urchin", "keystone": false,
+        "bands": { "r": [0.17,0.24], "K_max": [200,340], "alpha": [1.0,1.5], "weight": [0.5,0.8] } },
+      { "id": "n_shark", "kind": "predator", "name": "Blacktip Reef Shark", "keystone": true,
+        "bands": { "r": [0.09,0.15], "K_max": [60,120], "alpha": [2.0,2.6], "weight": [3,4] } }
+    ],
+
+    "edges": [
+      { "from": "n_sediment",   "to": "n_coral",      "betaBand": [0,    0   ] },
+      { "from": "n_coral",      "to": "n_parrotfish", "betaBand": [0.02, 0.05] },
+      { "from": "n_coral",      "to": "n_urchin",     "betaBand": [0.04, 0.07] },
+      { "from": "n_parrotfish", "to": "n_shark",      "betaBand": [0.03, 0.06] }
+    ],
+
+    "start": { "stressor": [45, 65], "populationFrac": [0.30, 0.50] },
+
+    "stressorPool": [
+      { "type": "runoff", "sourceLBand": [60, 95], "spreadRate": [3, 7] },
+      { "type": "invasive", "invasiveName": "Lionfish", "targetNative": "n_parrotfish",
+        "bands": { "r": [0.10,0.16], "K_max": [80,140], "alpha": [0.7,1.0], "weight": [0,0] },
+        "betaBand": [0.020,0.035], "predatorBetaBand": [0.010,0.020], "populationFrac": [0.15,0.25] },
+      { "type": "overharvest", "targetNative": "n_parrotfish", "drainBand": [3,6], "protectCapStressor": 20 }
+    ],
+
+    "defaults": {
+      "grid": { "w": 16, "h": 12 },
+      "tiles": {
+        "t_0_0":  { "id": "t_0_0",  "x": 0,  "y": 0, "type": "source", "stressor": 60, "protected": false },
+        "t_4_2":  { "id": "t_4_2",  "x": 4,  "y": 2, "type": "water",  "stressor": 50, "protected": false },
+        "t_8_5":  { "id": "t_8_5",  "x": 8,  "y": 5, "type": "water",  "stressor": 40, "protected": false },
+        "t_10_7": { "id": "t_10_7", "x": 10, "y": 7, "type": "water",  "stressor": 30, "protected": false },
+        "t_12_9": { "id": "t_12_9", "x": 12, "y": 9, "type": "land",   "stressor": 10, "protected": false }
+      },
+      "nodes": {
+        "n_sediment":   { "id": "n_sediment",   "name": "Sediment Plume",      "kind": "stressor", "keystone": false, "tileId": "t_0_0",  "population": 0,   "r": 0,    "K_max": 0,   "alpha": 0,    "weight": 0,    "status": "stable", "discovered": false, "extinction_counter": 0 },
+        "n_coral":      { "id": "n_coral",      "name": "Reef-building Coral",  "kind": "producer", "keystone": true,  "tileId": "t_4_2",  "population": 225, "r": 0.16, "K_max": 500, "alpha": 1.2,  "weight": 2.5,  "status": "stable", "discovered": false, "extinction_counter": 0 },
+        "n_parrotfish": { "id": "n_parrotfish", "name": "Parrotfish",           "kind": "consumer", "keystone": false, "tileId": "t_8_5",  "population": 146, "r": 0.17, "K_max": 325, "alpha": 1.5,  "weight": 1.25, "status": "stable", "discovered": false, "extinction_counter": 0 },
+        "n_urchin":     { "id": "n_urchin",     "name": "Sea Urchin",           "kind": "consumer", "keystone": false, "tileId": "t_10_7", "population": 120, "r": 0.20, "K_max": 270, "alpha": 1.25, "weight": 0.65, "status": "stable", "discovered": false, "extinction_counter": 0 },
+        "n_shark":      { "id": "n_shark",      "name": "Blacktip Reef Shark",  "kind": "predator", "keystone": true,  "tileId": "t_12_9", "population": 36,  "r": 0.12, "K_max": 90,  "alpha": 2.3,  "weight": 3.5,  "status": "stable", "discovered": false, "extinction_counter": 0 }
+      },
+      "edges": [
+        { "from": "n_sediment",   "to": "n_coral",      "beta": 0,     "revealed": false },
+        { "from": "n_coral",      "to": "n_parrotfish", "beta": 0.035, "revealed": false },
+        { "from": "n_coral",      "to": "n_urchin",     "beta": 0.05,  "revealed": false },
+        { "from": "n_parrotfish", "to": "n_shark",      "beta": 0.045, "revealed": false }
+      ],
+      "actionsThisStep": {},
+      "activeStressors": [ { "type": "runoff", "sourceTileId": "t_0_0", "spreadRate": 4 } ]
     }
   }
 }

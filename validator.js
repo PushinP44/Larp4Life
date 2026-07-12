@@ -175,10 +175,16 @@ function checkSolvable(world) {
       }
     }
 
-    // ── 2. Invasive: cull the invasive node ────────────────────────────────────
+    // ── 2. Invasive: cull the invasive node — TRADE-OFF-AWARE (#2) ─────────────
+    //     The invasive is also the keystone predator's food; don't cull toward
+    //     zero while the primary prey is scarce (would starve the keystone).
     if (invasiveDef && mockState.player.resources >= CULL_COST) {
-      const inv = mockState.world.nodes[invasiveDef.nodeId];
-      if (inv && inv.status !== 'extinct' && inv.population > 0) {
+      const inv  = mockState.world.nodes[invasiveDef.nodeId];
+      const prey = mockState.world.nodes[invasiveDef.targetNative];
+      const preyRel = prey && prey.K_max > 0 ? prey.population / prey.K_max : 1;
+      // Restore the habitat first: only cull once the prey is healthy (trade-off #2).
+      const safeToCull = preyRel >= 0.45;
+      if (inv && inv.status !== 'extinct' && inv.population > 0 && safeToCull) {
         const removal = Math.ceil(inv.population * 0.45);
         inv.population = Math.max(0, inv.population - removal);
         mockState.player.resources -= CULL_COST;

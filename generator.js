@@ -60,8 +60,9 @@ function pickStressors(template, rng, nodeTiles, w, h, usedTiles) {
     const def = pool[idx];
 
     if (def.type === 'runoff') {
-      // sourceTileId is the existing n_runoff node's tile (already in nodeTiles)
-      const sourceTileId = nodeTiles['n_runoff'];
+      // sourceTileId is the template's stressor node's tile (biome-agnostic)
+      const stressorNode = template.nodes.find(n => n.kind === 'stressor');
+      const sourceTileId = nodeTiles[stressorNode.id];
       const [slo, shi] = def.spreadRate ?? [3, 6];
       const spreadRate = randFloat(rng, slo, shi);
       // Source L — drawn from sourceLBand
@@ -99,7 +100,7 @@ function pickStressors(template, rng, nodeTiles, w, h, usedTiles) {
 
         extraNodes['n_invasive'] = {
           id:                 'n_invasive',
-          name:               'Mozambique Tilapia',
+          name:               def.invasiveName ?? 'Mozambique Tilapia',
           kind:               'invasive',
           keystone:           false,
           tileId,
@@ -123,10 +124,25 @@ function pickStressors(template, rng, nodeTiles, w, h, usedTiles) {
           beta,
           revealed: false
         });
+
+        // TRADE-OFF edge (#2): the invasive is ALSO the apex predator's food.
+        // Culling it relieves the prey but removes the keystone's backup food —
+        // over-culling while the prey is still scarce starves the predator.
+        const predatorNode = template.nodes.find(nd => nd.kind === 'predator');
+        if (predatorNode) {
+          const [plo, phi] = def.predatorBetaBand ?? [0.01, 0.02];
+          const pBeta = randFloat(rng, plo, phi);
+          extraEdges.push({
+            from:     'n_invasive',
+            to:       predatorNode.id,
+            beta:     pBeta,
+            revealed: false
+          });
+        }
       } else {
         // Already added — still consume RNG draws to keep sequence stable
-        // (r, K_max, alpha, frac, tile_x, tile_y, beta — 7 draws)
-        for (let i = 0; i < 7; i++) rng();
+        // (r, K_max, alpha, frac, tile_x, tile_y, beta, predatorBeta — 8 draws)
+        for (let i = 0; i < 8; i++) rng();
       }
 
       activeStressors.push({

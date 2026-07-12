@@ -39,7 +39,11 @@ import { generateWorld }  from '../generator.js';
 import { runDailyStep }   from '../ecosystem.js';
 
 const biomes   = JSON.parse(readFileSync(path.join(projectRoot, 'data/biomes.json'), 'utf8'));
-const TEMPLATE = biomes.coastal_wetland;
+const _biomeArgIdx = process.argv.indexOf('--biome');
+const BIOME    = _biomeArgIdx !== -1 && process.argv[_biomeArgIdx + 1] ? process.argv[_biomeArgIdx + 1] : 'coastal_wetland';
+const TEMPLATE = biomes[BIOME];
+if (!TEMPLATE) { console.error(`Unknown biome: ${BIOME}`); process.exit(1); }
+console.log(`\n  Biome: ${BIOME}\n`);
 
 // ── CLI args ───────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -57,8 +61,12 @@ const BIOREMEDIATION_L_RED = 50;
 const CULL_COST            = 45;   // re-tune: 55→45 for invasive+overharvest pacing
 const PROTECT_COST         = 120;  // re-tune: 150→120
 const PROTECT_CAP          = 20;
-const COLLAPSE_TIMER_START = 45;   // re-tune §1: uniform 45 for ALL worlds
+const COLLAPSE_TIMER_START = TEMPLATE.collapseTimer ?? 45;   // per-biome clock (wetland 45, reef 52)
 const DAILY_INCOME         = 65;  // re-tune: 60→65
+// Trade-off (#2) — mirror ecosystem.js constants for the delta-cap exemption
+const HERON_STARVE_PENALTY  = 6;
+const INVASIVE_STARVE_FLOOR = 0.20;
+const TRADEOFF_PREY_SAFE    = 0.45;
 
 // ── Handicapped player constants (§5) ─────────────────────────────────────
 const DIAGNOSIS_LAG        = 3;    // days before handicapped player acts usefully
@@ -174,10 +182,19 @@ function applyCorrectIntervention(state, hasRunoff, invasiveDef, harvestDef, act
     }
   }
 
-  // 2. Invasive: cull the invasive node
+  // 2. Invasive: cull the invasive node — TRADE-OFF-AWARE (#2).
+  //    The invasive is also the keystone predator's food, so don't cull it toward
+  //    zero while the primary prey (targetNative) is still scarce — that starves
+  //    the keystone. Cull freely while the invasive is abundant OR once the prey
+  //    has recovered enough to feed the predator alone.
   if (invasiveDef && state.player.resources >= CULL_COST) {
-    const inv = state.world.nodes[invasiveDef.nodeId];
-    if (inv && inv.status !== 'extinct' && inv.population > 0) {
+    const inv  = state.world.nodes[invasiveDef.nodeId];
+    const prey = state.world.nodes[invasiveDef.targetNative];
+    const preyRel = prey && prey.K_max > 0 ? prey.population / prey.K_max : 1;
+    // Restore the habitat first: only cull once the predator's prey is healthy,
+    // so finishing the invasive off never starves the keystone (trade-off #2).
+    const safeToCull = preyRel >= 0.45;
+    if (inv && inv.status !== 'extinct' && inv.population > 0 && safeToCull) {
       const removal = Math.ceil(inv.population * 0.45);
       inv.population = Math.max(0, inv.population - removal);
       state.player.resources -= CULL_COST;

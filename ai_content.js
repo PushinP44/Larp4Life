@@ -51,17 +51,29 @@ const _SPRITE_NAMES = [
   'tile_water', 'tile_marsh', 'tile_land', 'tile_source',
   // tiles (toxic variants)
   'tile_water_toxic', 'tile_marsh_toxic', 'tile_land_toxic', 'tile_source_toxic',
-  // species
-  'sprite_seagrass', 'sprite_shrimp', 'sprite_heron', 'sprite_runoff',
+  // species — wetland
+  'sprite_seagrass', 'sprite_shrimp', 'sprite_heron', 'sprite_runoff', 'sprite_crab',
+  // species — reef
+  'sprite_coral', 'sprite_parrotfish', 'sprite_urchin', 'sprite_shark', 'sprite_sediment',
+  // invasive species (name-keyed: one per biome)
+  'sprite_tilapia', 'sprite_lionfish',
+  // reef tile variants (healthy + toxic)
+  'tile_reefwater', 'tile_sand', 'tile_reef', 'tile_sediment',
+  'tile_reefwater_toxic', 'tile_sand_toxic', 'tile_reef_toxic', 'tile_sediment_toxic',
   // extinct silhouettes
   'sprite_seagrass_extinct', 'sprite_shrimp_extinct', 'sprite_heron_extinct',
   // agent, player spritesheet + UI pack
   'agent', 'player', 'ui_pack',
-  // decorative props (scatter layer)
+  // decorative props (scatter layer) — wetland
   'prop_tree', 'prop_bush', 'prop_reeds', 'prop_rock',
   'prop_flowers', 'prop_lilypad', 'prop_stump', 'prop_grass',
-  // cover key art (used by intro sequence + start card)
+  // decorative props — reef (prop_rock is shared; the 7 below are reef-only)
+  'prop_coral', 'prop_coralhead', 'prop_anemone', 'prop_kelp',
+  'prop_algae', 'prop_starfish', 'prop_shell',
+  // cover key art (used by start card)
   'keyart',
+  // intro sequence panel backdrops (Rule 01: onerror no-op → graceful fallback)
+  'intro_1', 'intro_2', 'intro_3',
 ];
 
 /**

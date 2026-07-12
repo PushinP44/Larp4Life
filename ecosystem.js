@@ -38,6 +38,21 @@ export const CULL_FRAC       = 0.45; // fraction of invasive population removed 
 export const PROTECT_CAP     = 20;   // max stressor on a protected tile
 export const BIOREM_AMOUNT   = 50;   // L reduction per bioremediation application
 
+// Trade-off (#2): the invasive (Mozambique Tilapia) is also the keystone predator's
+// food. Culling it to near-zero while the predator's PRIMARY prey is still scarce
+// deprives the predator — it loses condition each day until the prey recovers.
+// Winning line: restore the habitat (raise prey) FIRST, then finish the cull.
+export const TRADEOFF_PREY_SAFE    = 0.45;  // prey rel abundance below which the predator is at risk
+export const INVASIVE_STARVE_FLOOR = 0.20;  // invasive rel abundance below which its backup-food role is gone
+export const HERON_STARVE_PENALTY  = 6;     // predator population lost per day when over-culled while prey scarce
+
+// Escalation (#4): unaddressed runoff pollution ACCELERATES over time (bounded),
+// and reverses once the source is bioremediated. Rewards fast root-cause action;
+// punishes dawdling. Tile-L based → no population-clamp interaction.
+export const RUNOFF_ESCALATION_RATE  = 0.06; // +intensity per day the source stays uncleaned
+export const RUNOFF_ESCALATION_MAX   = 0.80; // cap — spread up to ×1.8 at full escalation
+export const RUNOFF_ESCALATION_DECAY = 0.15; // intensity recovered per day once the source is cleaned
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Eq1 — Dynamic carrying capacity
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,9 +302,17 @@ function processStressors(state) {
       const sourceTile = tiles[s.sourceTileId];
       if (!sourceTile) continue;
       const sourceL = sourceTile.stressor ?? 0;
-      if (sourceL < 10) continue; // source cleaned — propagation stopped
 
-      const spread = s.spreadRate ?? RUNOFF_SPREAD;
+      // Escalation (#4): unaddressed pollution accelerates; cleaning the source reverses it.
+      if (!Number.isFinite(s.escalation)) s.escalation = 0;
+      if (sourceL >= 10) {
+        s.escalation = Math.min(RUNOFF_ESCALATION_MAX, s.escalation + RUNOFF_ESCALATION_RATE);
+      } else {
+        s.escalation = Math.max(0, s.escalation - RUNOFF_ESCALATION_DECAY);
+        continue; // source cleaned — propagation stopped
+      }
+
+      const spread = (s.spreadRate ?? RUNOFF_SPREAD) * (1 + s.escalation);
 
       // Parse tile coordinates from tileId "t_X_Y"
       const parts = s.sourceTileId.replace('t_', '').split('_').map(Number);
@@ -323,8 +346,26 @@ function processStressors(state) {
       // Note: no stability clamp here — this is an external removal BEFORE Eq2,
       // modelling continuous extraction. The Eq2 clamp operates on the remaining pop.
 
+    } else if (s.type === 'invasive') {
+      // Suppression of the prey is carried by the Eq2 edge. Here we model the
+      // TRADE-OFF (#2): the predator feeds on the invasive too. If the player has
+      // culled the invasive to near-zero while the predator's primary prey is
+      // still scarce, the predator loses its backup food and starves.
+      const inv  = nodes[s.nodeId];
+      const prey = nodes[s.targetNative];
+      const predator = Object.values(nodes).find(n => n.kind === 'predator' && n.status !== 'extinct');
+      if (inv && prey && predator) {
+        const invRel  = inv.K_max  > 0 ? inv.population  / inv.K_max  : 0;
+        const preyRel = prey.K_max > 0 ? prey.population / prey.K_max : 1;
+        if (invRel < INVASIVE_STARVE_FLOOR && preyRel < TRADEOFF_PREY_SAFE) {
+          // Apply as a clamped action term (Eq2 subtracts it, bounded by ±0.35·P)
+          // so the trade-off respects the stability envelope — no clamp-bypass.
+          if (!state.world.actionsThisStep) state.world.actionsThisStep = {};
+          state.world.actionsThisStep[predator.id] =
+            (state.world.actionsThisStep[predator.id] ?? 0) + HERON_STARVE_PENALTY;
+        }
+      }
     }
-    // invasive: handled by Eq2 edge — nothing to do here.
   }
 }
 
