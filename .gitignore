@@ -1,2 +1,5 @@
 # OS junk
 .DS_Store
+
+# Generated code-graph analysis output (graphify) — dev artifact, not shipped
+graphify-out/
