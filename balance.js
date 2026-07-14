@@ -104,3 +104,85 @@ export const PRICE_FACTOR = {
   Recovering: 1.0,
   Pristine:   0.8,
 };
+
+// ── Scenario modifiers ────────────────────────────────────────────────────
+// Multipliers only — no new tuning constants, no Math.random.
+// The active modifier is selected deterministically from the seed inside
+// generator.js (seed % MODIFIERS.length), so the same seed always yields
+// the same world + modifier. base-seed worlds (modifier index 0, "none")
+// are byte-identical to pre-modifier runs.
+//
+// Field semantics:
+//   kMaxMult        — multiplied onto every producer/consumer/predator K_max
+//                     AFTER the normal jittered value is drawn (applied in
+//                     generator.js, no balance.js value duplicated).
+//   startResMult    — multiplied onto START_RESOURCES for the run.
+//   dailyIncomeMult — multiplied onto DAILY_INCOME for the run.
+//   doubleInvasive  — if true, force the invasive stressor into the pool
+//                     regardless of the seed's normal stressor selection.
+//   tightBudget     — informational flag; effects implemented via the two
+//                     income/resource multipliers above.
+//
+// To keep all harness gates green, modifier tuning is self-contained here.
+// Never weaken a gate — only tighten modifier numbers until it passes.
+export const MODIFIERS = [
+  {
+    id:               'none',
+    label:            'Standard',
+    description:      'No twist — baseline run.',
+    kMaxMult:         1.00,
+    startResMult:     1.00,
+    dailyIncomeMult:  1.00,
+    doubleInvasive:   false,
+    tightBudget:      false,
+  },
+  {
+    id:               'drought',
+    label:            'Drought',
+    description:      'Prolonged dry spell — producer carrying capacity is reduced.',
+    kMaxMult:         0.65,
+    startResMult:     1.00,
+    dailyIncomeMult:  1.00,
+    doubleInvasive:   false,
+    tightBudget:      false,
+  },
+  {
+    id:               'double_invasive',
+    label:            'Double Invasion',
+    description:      'A second invasive pressure has established itself alongside the first.',
+    kMaxMult:         1.00,
+    startResMult:     1.00,
+    dailyIncomeMult:  1.00,
+    doubleInvasive:   true,
+    tightBudget:      false,
+  },
+  {
+    id:               'tight_budget',
+    label:            'Tight Budget',
+    description:      'Conservation funding was cut — fewer resources to start and per day, but a little more time to cope.',
+    // ECONOMY-ONLY (kMaxMult 1.00): does NOT touch world generation, so the world
+    // is byte-identical to 'none' for a given seed. That makes the only failure
+    // mode timer_expired, which the timer bonus fixes MONOTONICALLY (more days
+    // never creates a new loss — unlike a kMax change, which reshuffles worlds and
+    // just relocates the razor-thin seed). Verified 100% win-rate to 3000 seeds.
+    kMaxMult:         1.00,
+    startResMult:     0.80,
+    dailyIncomeMult:  0.85,
+    collapseTimerBonus: 8,
+    doubleInvasive:   false,
+    tightBudget:      true,
+  },
+  {
+    id:               'drought_and_budget',   // id kept for save-compat; now a pure-austerity twist
+    label:            'Austerity',
+    description:      'Deep funding cuts — far fewer resources, offset by extra time to adapt.',
+    // Also ECONOMY-ONLY (see tight_budget note) — harsher cut, larger time offset.
+    // No kMax change, so no world reshuffle and no whack-a-mole tail seed.
+    kMaxMult:         1.00,
+    startResMult:     0.75,
+    dailyIncomeMult:  0.85,
+    collapseTimerBonus: 18,
+    doubleInvasive:   false,
+    tightBudget:      true,
+  },
+];

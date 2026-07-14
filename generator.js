@@ -18,7 +18,7 @@
 
 import { mulberry32, randFloat, randInt } from './prng.js';
 import { validateWorld } from './validator.js';
-import { COLLAPSE_TIMER } from './balance.js';
+import { COLLAPSE_TIMER, MODIFIERS } from './balance.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tile-type assignment by node kind
@@ -171,11 +171,22 @@ function pickStressors(template, rng, nodeTiles, w, h, usedTiles) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Deterministic modifier selection — pure arithmetic, ZERO RNG draws.
+// The same seed always maps to the same modifier, and modifier index 0
+// ('none') is byte-identical to pre-modifier builds.
+// ─────────────────────────────────────────────────────────────────────────────
+export function pickModifier(seed) {
+  const idx = (seed >>> 0) % MODIFIERS.length;
+  return MODIFIERS[idx];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal: build one candidate world from (template, seed)
 // Returns a plain world object (does NOT write to state yet).
 // ─────────────────────────────────────────────────────────────────────────────
 function buildWorld(template, seed) {
   const rng = mulberry32(seed);
+  const modifier = pickModifier(seed);
 
   const { w, h } = template.grid;
 
@@ -199,6 +210,9 @@ function buildWorld(template, seed) {
   }
 
   // ── 2. Pick typed stressors (uses RNG — must come before tile stamping) ──
+  // doubleInvasive modifier: the POOL IS NOT TOUCHED here — base-world RNG draws
+  // are identical to the 'none' modifier.  The extra invasive is appended AFTER
+  // all base draws at step 7 (below), consuming only end-of-stream RNG draws.
   const { activeStressors, extraNodes, extraEdges } =
     pickStressors(template, rng, nodeTiles, w, h, usedTiles);
 
@@ -282,7 +296,8 @@ function buildWorld(template, seed) {
     const bands = tdef.bands ?? { r:[0,0], K_max:[0,0], alpha:[0,0], weight:[0,0] };
 
     const r      = randSafe(bands.r[0],      bands.r[1]);
-    const K_max  = randSafe(bands.K_max[0],  bands.K_max[1]);
+    // kMaxMult: applied POST-draw so the RNG sequence is unchanged for modifier 'none'.
+    const K_max  = randSafe(bands.K_max[0],  bands.K_max[1]) * modifier.kMaxMult;
     const alpha  = randSafe(bands.alpha[0],  bands.alpha[1]);
     const weight = randSafe(bands.weight[0], bands.weight[1]);
 
@@ -348,13 +363,91 @@ function buildWorld(template, seed) {
     };
   });
 
+  // ── 7. doubleInvasive post-build: append a second invasive AFTER all base
+  //       draws.  New RNG draws happen only here — the base world is byte-
+  //       identical between 'none' modifier and any non-doubleInvasive modifier.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (modifier.doubleInvasive) {
+    const invasiveCount = activeStressors.filter(s => s.type === 'invasive').length;
+    // Only add the bonus invasive when the base world has < 2 stressors; adding a
+    // third stressor to an already-dual-stressor world creates an unbeatable combo.
+    if (invasiveCount === 0 && activeStressors.length < 2) {
+      // World didn't pick invasive at all — inject one now using end-of-stream draws.
+      const pool = template.stressorPool ?? [];
+      const invasiveDef = pool.find(e => e.type === 'invasive') ?? {
+        type:             'invasive',
+        invasiveName:     'Invasive Species',
+        targetNative:     (template.nodes.find(n => n.kind === 'consumer')?.id ?? 'n_shrimp'),
+        bands:            { r:[0.18,0.26], K_max:[180,300], alpha:[1.0,1.6], weight:[0,0] },
+        populationFrac:   [0.25, 0.40],
+        betaBand:         [0.04, 0.08],
+        predatorBetaBand: [0.01, 0.02],
+      };
+      // Consume exactly 8 RNG draws (same as invasive block in pickStressors stub)
+      const invR     = randFloat(rng, invasiveDef.bands.r[0],     invasiveDef.bands.r[1]);
+      const invKmax  = randFloat(rng, invasiveDef.bands.K_max[0], invasiveDef.bands.K_max[1]);
+      const invAlpha = randFloat(rng, invasiveDef.bands.alpha[0], invasiveDef.bands.alpha[1]);
+      const invFrac  = randFloat(rng, invasiveDef.populationFrac[0], invasiveDef.populationFrac[1]);
+      let invTileId;
+      let att2 = 0;
+      do {
+        const tx = randInt(rng, 0, w - 1);
+        const ty = randInt(rng, 0, h - 1);
+        invTileId = `t_${tx}_${ty}`;
+        att2++;
+      } while (usedTiles.has(invTileId) && att2 < 200);
+      usedTiles.add(invTileId);
+      const invBeta = randFloat(rng, invasiveDef.betaBand[0], invasiveDef.betaBand[1]);
+      const predNode = template.nodes.find(nd => nd.kind === 'predator');
+      const invPBeta = randFloat(rng,
+        invasiveDef.predatorBetaBand?.[0] ?? 0.01,
+        invasiveDef.predatorBetaBand?.[1] ?? 0.02);
+
+      nodes['n_invasive'] = {
+        id:                 'n_invasive',
+        name:               invasiveDef.invasiveName ?? 'Invasive Species',
+        kind:               'invasive',
+        keystone:           false,
+        tileId:             invTileId,
+        population:         Math.max(1, Math.round(invFrac * invKmax)),
+        r:                  invR,
+        K_max:              invKmax,
+        alpha:              invAlpha,
+        weight:             0,
+        status:             'stable',
+        discovered:         false,
+        extinction_counter: 0,
+      };
+      const [itx, ity] = invTileId.replace('t_', '').split('_').map(Number);
+      tiles[invTileId] = {
+        id:        invTileId,
+        x:         itx,
+        y:         ity,
+        type:      'water',
+        stressor:  randFloat(rng,
+          (template.start.stressor[0]) * 0.3,
+          (template.start.stressor[0]) * 0.6),
+        protected: false,
+      };
+      const invTarget = invasiveDef.targetNative ?? 'n_shrimp';
+      edges.push({ from: 'n_invasive', to: invTarget, beta: invBeta, revealed: false });
+      if (predNode) {
+        edges.push({ from: 'n_invasive', to: predNode.id, beta: invPBeta, revealed: false });
+      }
+      activeStressors.push({ type: 'invasive', nodeId: 'n_invasive', targetNative: invTarget });
+    }
+    // If invasive already present (invasiveCount >= 1), no extra draws needed —
+    // the base world already has the extra pressure from the invasive stressor.
+  }
+
   return {
     grid:             { ...template.grid },
     tiles,
     nodes,
     edges,
     actionsThisStep:  {},
-    activeStressors   // written once here; ecosystem.js reads this each step
+    activeStressors,  // written once here; ecosystem.js reads this each step
+    modifier          // scenario modifier object (id, label, multipliers)
   };
 }
 
@@ -411,6 +504,13 @@ export function generateWorld(template, seed, state) {
       state.world                  = world;
       state.meta.seed              = currentSeed;         // written ONCE — Rule 03 §7
       state.meta.biome_template    = template.id ?? 'coastal_wetland';
+      // Persist modifier id + label for HUD / start-card display.
+      state.meta.modifier_id       = world.modifier.id;
+      state.meta.modifier_label    = world.modifier.label;
+      // Store economy multipliers so ecosystem.js / harness can read them
+      // without re-computing from seed.
+      state.meta.modifier_daily_income_mult  = world.modifier.dailyIncomeMult;
+      state.meta.modifier_start_res_mult     = world.modifier.startResMult;
 
       // Uniform collapse_timer for all worlds — no per-stressor special-casing.
       // (Re-tune §1: remove invasive +30 timer bonus.)

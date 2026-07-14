@@ -1170,6 +1170,19 @@ function drawHUD(state, ctx, canvasW) {
     ctx.globalAlpha = 0.85;
     ctx.fillText(`streak ${streak}/3`, curX, cy + 4);
     ctx.globalAlpha = 1;
+    curX += 80;
+  }
+
+  // ── Scenario modifier label (right-aligned) ───────────────────────────────
+  const modLabel = state.meta.modifier_label;
+  if (modLabel && modLabel !== 'Standard') {
+    ctx.save();
+    ctx.font      = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#f0a500';
+    ctx.globalAlpha = 0.80;
+    ctx.fillText(`[${modLabel}]`, canvasW - PAD, cy + 4);
+    ctx.restore();
   }
 }
 

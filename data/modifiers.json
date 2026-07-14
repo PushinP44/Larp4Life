@@ -1,0 +1,57 @@
+[
+  {
+    "id": "none",
+    "label": "Standard",
+    "description": "No twist — baseline run.",
+    "kMaxMult":           1.0,
+    "startResMult":       1.0,
+    "dailyIncomeMult":    1.0,
+    "collapseTimerBonus": 0,
+    "doubleInvasive":     false,
+    "tightBudget":        false
+  },
+  {
+    "id": "drought",
+    "label": "Drought",
+    "description": "Prolonged dry spell — producer carrying capacity is reduced.",
+    "kMaxMult":           0.65,
+    "startResMult":       1.0,
+    "dailyIncomeMult":    1.0,
+    "collapseTimerBonus": 0,
+    "doubleInvasive":     false,
+    "tightBudget":        false
+  },
+  {
+    "id": "double_invasive",
+    "label": "Double Invasion",
+    "description": "A second invasive pressure has established itself alongside the first.",
+    "kMaxMult":           1.0,
+    "startResMult":       1.0,
+    "dailyIncomeMult":    1.0,
+    "collapseTimerBonus": 0,
+    "doubleInvasive":     true,
+    "tightBudget":        false
+  },
+  {
+    "id": "tight_budget",
+    "label": "Tight Budget",
+    "description": "Conservation funding was cut — fewer resources to start and per day, but a little more time to cope.",
+    "kMaxMult":           1.0,
+    "startResMult":       0.80,
+    "dailyIncomeMult":    0.85,
+    "collapseTimerBonus": 8,
+    "doubleInvasive":     false,
+    "tightBudget":        true
+  },
+  {
+    "id": "drought_and_budget",
+    "label": "Austerity",
+    "description": "Deep funding cuts — far fewer resources, offset by extra time to adapt.",
+    "kMaxMult":           1.0,
+    "startResMult":       0.75,
+    "dailyIncomeMult":    0.85,
+    "collapseTimerBonus": 18,
+    "doubleInvasive":     false,
+    "tightBudget":        true
+  }
+]

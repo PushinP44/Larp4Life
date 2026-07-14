@@ -40,7 +40,13 @@ function makeDefaultState() {
       collapse_timer: COLLAPSE_TIMER, // days remaining before lose (balance.js — uniform for all worlds)
       health_streak: 0,               // consecutive days at H >= 75
       ecosystem_health: 50.0,         // 0–100, derived each step
-      market_tier: 'Degraded'         // Toxic | Degraded | Recovering | Pristine
+      market_tier: 'Degraded',        // Toxic | Degraded | Recovering | Pristine
+      // Scenario modifier fields (written by generator.js via generateWorld)
+      modifier_id:                 'none',
+      modifier_label:              'Standard',
+      modifier_daily_income_mult:  1.0,
+      modifier_start_res_mult:     1.0,
+      daily_income:                null,  // null → ecosystem.js uses DAILY_INCOME
     },
     player: {
       name: 'Field Agent',
@@ -133,6 +139,14 @@ function sanitizeLoadedState(parsed) {
     m.health_streak    = _num(m.health_streak, 0, { min: 0, max: 100000, int: true });
     m.ecosystem_health = _num(m.ecosystem_health, 50, { min: 0, max: 100 });
     m.market_tier      = _str(m.market_tier, d.meta.market_tier);
+    // Scenario modifier fields (optional — default to 'none' / 'Standard' / 1.0)
+    m.modifier_id                = _str(m.modifier_id,                'none');
+    m.modifier_label             = _str(m.modifier_label,             'Standard');
+    m.modifier_daily_income_mult = _num(m.modifier_daily_income_mult, 1.0, { min: 0.01, max: 10 });
+    m.modifier_start_res_mult    = _num(m.modifier_start_res_mult,    1.0, { min: 0.01, max: 10 });
+    if (m.daily_income !== null && m.daily_income !== undefined) {
+      m.daily_income = _num(m.daily_income, null, { min: 0, max: 1e6 });
+    }
 
     // player
     p.name            = _str(p.name, d.player.name);

@@ -26,7 +26,8 @@ import {
   initInput, triggerScan, scanTile, tickMovement,
   pressDir, releaseDir, releaseAllDirs,
 } from './input.js';
-import { SCANNER_CHARGES, COLLAPSE_TIMER } from './balance.js';
+import { SCANNER_CHARGES, COLLAPSE_TIMER, START_RESOURCES, DAILY_INCOME, MODIFIERS } from './balance.js';
+import { pickModifier } from './generator.js';
 import { buildNotebookHTML, getTopRecommendation }  from './notebook.js';
 import { escapeHTML, escapeAttr } from './safehtml.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
@@ -628,8 +629,12 @@ document.addEventListener('click', async (e) => {
 // Start card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function showStartCard() {
-  const defaultSeed = Math.floor(Date.now() % 9999) + 1;
+function showStartCard(previewSeed) {
+  const defaultSeed = previewSeed ?? Math.floor(Date.now() % 9999) + 1;
+  const mod = pickModifier(defaultSeed);
+  const modIsNone = mod.id === 'none';
+  const modLabel = escapeHTML(mod.label);
+  const modDesc  = escapeHTML(mod.description);
   const biomeBtn = (key, label) =>
     `<button class="start-biome-btn${_selectedBiome === key ? ' selected' : ''}" data-action="pick-biome" data-biome="${key}">${label}</button>`;
   showOverlay(`
@@ -642,13 +647,45 @@ function showStartCard() {
         </div>
         <div class="start-seed-row">
           <label for="seed-input">Seed</label>
-          <input id="seed-input" type="number" min="1" max="999999" value="${defaultSeed}">
+          <input id="seed-input" type="number" min="1" max="999999" value="${defaultSeed}"
+                 data-action="preview-modifier">
+        </div>
+        <div class="start-modifier-preview" id="modifier-preview"
+             style="margin:6px 0 10px;padding:6px 10px;border-radius:6px;
+                    background:${modIsNone ? 'rgba(255,255,255,0.05)' : 'rgba(240,165,0,0.12)'};
+                    border:1px solid ${modIsNone ? 'rgba(255,255,255,0.08)' : 'rgba(240,165,0,0.35)'};
+                    font-size:0.82em;line-height:1.5;text-align:left;">
+          <span style="font-weight:700;color:${modIsNone ? '#aaa' : '#f0a500'};">
+            ${modIsNone ? 'Scenario: Standard' : `Scenario: ${modLabel}`}
+          </span>
+          ${modIsNone ? '' : `<br><span style="opacity:0.75;">${modDesc}</span>`}
         </div>
         <button class="start-begin-btn" data-action="newgame">Begin</button>
         <p class="start-controls-hint">Move: WASD / arrows / click · Walk near wildlife to scan it<br>Space: end a day · F: fast-forward to the next change · N: notes · V: store</p>
       </div>
     </div>
   `);
+
+  // Live-update modifier preview as the user changes the seed input.
+  const seedEl = document.getElementById('seed-input');
+  if (seedEl) {
+    seedEl.addEventListener('input', () => {
+      const s = Math.max(1, parseInt(seedEl.value || '1', 10));
+      const m = pickModifier(s);
+      const previewEl = document.getElementById('modifier-preview');
+      if (!previewEl) return;
+      const isNone = m.id === 'none';
+      previewEl.style.background = isNone
+        ? 'rgba(255,255,255,0.05)' : 'rgba(240,165,0,0.12)';
+      previewEl.style.borderColor = isNone
+        ? 'rgba(255,255,255,0.08)' : 'rgba(240,165,0,0.35)';
+      previewEl.innerHTML =
+        `<span style="font-weight:700;color:${isNone ? '#aaa' : '#f0a500'};">
+           ${isNone ? 'Scenario: Standard' : `Scenario: ${escapeHTML(m.label)}`}
+         </span>` +
+        (isNone ? '' : `<br><span style="opacity:0.75;">${escapeHTML(m.description)}</span>`);
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -797,6 +834,15 @@ async function newGame(seed, biomeKey = _selectedBiome) {
     GameState.meta.collapse_timer = template.collapseTimer ?? COLLAPSE_TIMER;  // per-biome clock
     _proximityDiscovered.clear(); // reset session discovery tracker for new world
     generateWorld(template, seed, GameState);
+
+    // Apply scenario modifier economy multipliers.
+    // pickModifier uses the same seed → same modifier as generator.js.
+    const mod = pickModifier(seed);
+    GameState.player.resources     = Math.round(START_RESOURCES * mod.startResMult);
+    // Store effective daily income for ecosystem.js to read each tick.
+    GameState.meta.daily_income    = Math.round(DAILY_INCOME    * mod.dailyIncomeMult);
+    // Trade-off modifiers grant extra days to offset their economy penalty.
+    GameState.meta.collapse_timer += (mod.collapseTimerBonus ?? 0);
 
     // Fix (2): compute true Day-1 health immediately after world generation
     // so HUD shows real starting values before any step is advanced.

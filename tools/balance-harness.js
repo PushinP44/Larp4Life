@@ -35,13 +35,13 @@ import path               from 'path';
 const __dirname   = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
-import { generateWorld }  from '../generator.js';
+import { generateWorld, pickModifier } from '../generator.js';
 import { runDailyStep }   from '../ecosystem.js';
 import {
   MAX_DELTA_FRAC, COST_BIOREMEDIATION, BIOREM_AMOUNT,
   COST_REBALANCING, COST_STABILIZATION, PROTECT_CAP,
   COLLAPSE_TIMER, DAILY_INCOME, START_RESOURCES, SCANNER_CHARGES,
-  CULL_FRAC, TRADEOFF_PREY_SAFE,
+  CULL_FRAC, TRADEOFF_PREY_SAFE, MODIFIERS,
 } from '../balance.js';
 
 const biomes   = JSON.parse(readFileSync(path.join(projectRoot, 'data/biomes.json'), 'utf8'));
@@ -49,6 +49,18 @@ const _biomeArgIdx = process.argv.indexOf('--biome');
 const BIOME    = _biomeArgIdx !== -1 && process.argv[_biomeArgIdx + 1] ? process.argv[_biomeArgIdx + 1] : 'coastal_wetland';
 const TEMPLATE = biomes[BIOME];
 if (!TEMPLATE) { console.error(`Unknown biome: ${BIOME}`); process.exit(1); }
+
+// ── Modifier filter — optional --modifier <id> flag ───────────────────────
+// If omitted, the harness iterates ALL modifiers.  If provided, only that
+// modifier's seeds are run (useful for targeted debugging).
+const _modArgIdx  = process.argv.indexOf('--modifier');
+const _modFilter  = _modArgIdx !== -1 && process.argv[_modArgIdx + 1]
+  ? process.argv[_modArgIdx + 1] : null;
+if (_modFilter && !MODIFIERS.find(m => m.id === _modFilter)) {
+  console.error(`Unknown modifier: ${_modFilter}. Valid ids: ${MODIFIERS.map(m => m.id).join(', ')}`);
+  process.exit(1);
+}
+
 console.log(`\n  Biome: ${BIOME}\n`);
 
 // ── CLI args ───────────────────────────────────────────────────────────────
@@ -79,18 +91,25 @@ const MISTAKE_EVERY        = 4;    // every 4th intervention is wrong-tool
 // ─────────────────────────────────────────────────────────────────────────────
 function makeMockState(world) {
   // Uniform timer — no invasive special-case
+  // Apply scenario modifier multipliers (embedded in world.modifier by generator.js)
+  const mod = world.modifier ?? MODIFIERS[0];
+  const effectiveStartRes    = Math.round(START_RESOURCES * mod.startResMult);
+  const effectiveDailyIncome = Math.round(DAILY_INCOME    * mod.dailyIncomeMult);
   return {
     meta: {
       seed:             0,
       biome_template:   'coastal_wetland',
       day_count:        1,
-      collapse_timer:   COLLAPSE_TIMER_START,
+      collapse_timer:   COLLAPSE_TIMER_START + (mod.collapseTimerBonus ?? 0),
       health_streak:    0,
       ecosystem_health: 50,
-      market_tier:      'Degraded'
+      market_tier:      'Degraded',
+      modifier_id:      mod.id,
+      modifier_label:   mod.label,
+      daily_income:     effectiveDailyIncome,
     },
     player: {
-      resources:       START_RESOURCES,
+      resources:       effectiveStartRes,
       tile_x:          0,
       tile_y:          0,
       scanner_charges: SCANNER_CHARGES
@@ -414,13 +433,21 @@ function generateForSeed(seed) {
     if (String(a[0]).includes('failed validation')) rerolls++;
   };
 
+  // Pre-compute modifier so we can set economy multipliers before generateWorld runs
+  // (generateWorld also sets meta.modifier_* but we need resources at start)
+  const preMod = pickModifier(seed);
   const mockState = {
     meta: {
       seed: 0, biome_template: 'coastal_wetland', day_count: 1,
-      collapse_timer: COLLAPSE_TIMER_START, health_streak: 0,
-      ecosystem_health: 50, market_tier: 'Degraded'
+      collapse_timer: COLLAPSE_TIMER_START + (preMod.collapseTimerBonus ?? 0), health_streak: 0,
+      ecosystem_health: 50, market_tier: 'Degraded',
+      modifier_id: preMod.id, modifier_label: preMod.label,
+      daily_income: Math.round(DAILY_INCOME * preMod.dailyIncomeMult),
     },
-    player: { resources: START_RESOURCES, tile_x: 0, tile_y: 0, scanner_charges: SCANNER_CHARGES },
+    player: {
+      resources:       Math.round(START_RESOURCES * preMod.startResMult),
+      tile_x: 0, tile_y: 0, scanner_charges: SCANNER_CHARGES
+    },
     world:  { grid:{w:16,h:12}, tiles:{}, nodes:{}, edges:[], actionsThisStep:{}, activeStressors:[] },
     notebook: { discovered_nodes:[], revealed_edges:[] },
     vendor: { base_prices:{bioremediation:BIOREMEDIATION_COST,rebalancing:CULL_COST,stabilization:PROTECT_COST},
@@ -480,13 +507,15 @@ function advisorMessage(stats) {
   const lines = [];
 
   if (stats.fallbackCount > 0) {
-    const pct = ((stats.fallbackCount / SEED_COUNT) * 100).toFixed(1);
-    lines.push(`\n⚠  FALLBACK RATE: ${pct}% (${stats.fallbackCount}/${SEED_COUNT} seeds used template defaults)`);
+    const tot = stats.totalRun ?? SEED_COUNT;
+    const pct = ((stats.fallbackCount / tot) * 100).toFixed(1);
+    lines.push(`\n⚠  FALLBACK RATE: ${pct}% (${stats.fallbackCount}/${tot} seeds used template defaults)`);
   }
 
   if (stats.totalLosses > 0) {
-    const pct = ((stats.totalLosses / SEED_COUNT) * 100).toFixed(1);
-    lines.push(`\n❌  OPTIMAL WIN-RATE: ${((1 - stats.totalLosses / SEED_COUNT) * 100).toFixed(1)}%  (${stats.totalLosses} seeds unwinnable)`);
+    const tot = stats.totalRun ?? SEED_COUNT;
+    const pct = ((stats.totalLosses / tot) * 100).toFixed(1);
+    lines.push(`\n❌  OPTIMAL WIN-RATE: ${((1 - stats.totalLosses / tot) * 100).toFixed(1)}%  (${stats.totalLosses} seeds unwinnable)`);
     if (stats.lossReasons.timer_expired > 0) {
       lines.push(`   ${stats.lossReasons.timer_expired} timer-expired:`);
       lines.push('     • Raise DAILY_INCOME or collapse_timer');
@@ -563,7 +592,7 @@ function percentile(sorted, p) {
 // ─────────────────────────────────────────────────────────────────────────────
 console.log(`\n${'═'.repeat(72)}`);
 console.log(`  Ecosystem X — Balance Harness  (Re-tune §1-5)`);
-console.log(`  Seeds ${SEED_START}..${SEED_START + SEED_COUNT - 1}  (${SEED_COUNT} seeds)  |  collapse_timer=${COLLAPSE_TIMER_START} (uniform)`);
+console.log(`  Seeds ${SEED_START}..${SEED_START + SEED_COUNT - 1}  (${SEED_COUNT} requested)  |  collapse_timer=${COLLAPSE_TIMER_START} (uniform)${_modFilter ? `  |  modifier=${_modFilter}` : ''}`);
 console.log(`${'═'.repeat(72)}\n`);
 
 const PROGRESS_INTERVAL = Math.max(1, Math.floor(SEED_COUNT / 20));
@@ -573,6 +602,10 @@ const DET_CHECK_SEEDS = 5;
 
 for (let i = 0; i < SEED_COUNT; i++) {
   const seed = SEED_START + i;
+
+  // Skip seeds that don't match the active modifier filter (if any).
+  const seedMod = pickModifier(seed);
+  if (_modFilter && seedMod.id !== _modFilter) continue;
 
   if (i % PROGRESS_INTERVAL === 0) {
     const pct = ((i / SEED_COUNT) * 100).toFixed(0).padStart(3);
@@ -597,6 +630,8 @@ for (let i = 0; i < SEED_COUNT; i++) {
     rerolls:      gen.rerolls,
     usedDefaults: gen.usedDefaults,
     firstValid:   gen.rerolls === 0 && !gen.usedDefaults,
+    modifierId:   seedMod.id,
+    modifierLabel: seedMod.label,
     // optimal player
     ...optPlay,
     // handicapped player
@@ -611,6 +646,7 @@ process.stdout.write('\r  Progress: 100%                    \n\n');
 // ─────────────────────────────────────────────────────────────────────────────
 // Aggregate statistics — OPTIMAL
 // ─────────────────────────────────────────────────────────────────────────────
+const TOTAL_RUN      = results.length; // may differ from SEED_COUNT if --modifier filter active
 const wins           = results.filter(r => r.won);
 const losses         = results.filter(r => !r.won);
 const firstValidSeeds= results.filter(r => r.firstValid);
@@ -633,7 +669,7 @@ for (const r of losses) {
 // ─────────────────────────────────────────────────────────────────────────────
 const handicapWins   = results.filter(r => r.handicapWon);
 const handicapLosses = results.filter(r => !r.handicapWon);
-const handicapWinRate= (handicapWins.length / SEED_COUNT * 100);
+const handicapWinRate= TOTAL_RUN > 0 ? (handicapWins.length / TOTAL_RUN * 100) : 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-stressor-combo stats (OPTIMAL + HANDICAPPED)
@@ -665,9 +701,9 @@ const pacingRatio = allMedians.length >= 2
   ? (Math.max(...allMedians) / Math.min(...allMedians))
   : 1;
 
-const winRate        = (wins.length / SEED_COUNT * 100).toFixed(2);
-const firstValidRate = (firstValidSeeds.length / SEED_COUNT * 100).toFixed(2);
-const fallbackRate   = (fallbackSeeds.length / SEED_COUNT * 100).toFixed(2);
+const winRate        = TOTAL_RUN > 0 ? (wins.length / TOTAL_RUN * 100).toFixed(2) : '0.00';
+const firstValidRate = TOTAL_RUN > 0 ? (firstValidSeeds.length / TOTAL_RUN * 100).toFixed(2) : '0.00';
+const fallbackRate   = TOTAL_RUN > 0 ? (fallbackSeeds.length / TOTAL_RUN * 100).toFixed(2) : '0.00';
 const medianDays     = percentile(wonDays, 50);
 const p10Days        = percentile(wonDays, 10);
 const p90Days        = percentile(wonDays, 90);
@@ -691,10 +727,11 @@ const medFlag = isNaN(medRatio) ? '' : (medRatio >= 0.30 && medRatio <= 0.65 ? '
 console.log(`  ┌${'─'.repeat(W)}┐`);
 console.log(`  │${'  OPTIMAL PLAYER  (uniform timer=' + COLLAPSE_TIMER_START + ')'.padEnd(W)}│`);
 console.log(`  ├${'─'.repeat(28)}┬${'─'.repeat(18)}┤`);
-console.log(row('Seeds tested',           SEED_COUNT));
-console.log(row('Win-rate',               `${winRate}%`,          wins.length === SEED_COUNT ? '✓' : '❌'));
+console.log(row('Seeds tested',           TOTAL_RUN));
+console.log(row('Win-rate',               `${winRate}%`,          wins.length === TOTAL_RUN ? '✓' : '❌'));
 console.log(row('First-seed valid rate',  `${firstValidRate}%`,   firstValidSeeds.length === SEED_COUNT ? '✓' : ''));
 console.log(row('Defaults fallback rate', `${fallbackRate}%`,     fallbackSeeds.length === 0 ? '✓' : '⚠'));
+if (_modFilter) console.log(row('Active modifier filter',  _modFilter));
 console.log(row('Losses (timer expired)', lossReasons.timer_expired));
 console.log(row('Losses (ks. extinct)',   lossReasons.keystone_extinct));
 console.log(row('Keystone extinctions',   ksExtSeeds.length));
@@ -735,6 +772,37 @@ for (const [combo, cs] of Object.entries(comboStats).sort(([a],[b])=>a<b?-1:1)) 
   console.log(row(`    handicap win-rate`,   `${hRate.toFixed(1)}%`, hFlag));
   console.log(row(`    handicap median`,     cs.hDays.length ? `${cs.handicappedMedian}d` : 'N/A'));
 }
+console.log(`  ├${'─'.repeat(28)}┴${'─'.repeat(18)}┤`);
+console.log(`  │${'  PER-MODIFIER SUMMARY'.padEnd(W)}│`);
+console.log(`  ├${'─'.repeat(28)}┬${'─'.repeat(18)}┤`);
+// Aggregate per-modifier stats across all results
+const modStats = {};
+for (const m of MODIFIERS) modStats[m.id] = { label: m.label, wins:0, losses:0, hWins:0, hTotal:0, days:[], hDays:[] };
+for (const r of results) {
+  const ms = modStats[r.modifierId];
+  if (!ms) continue;
+  if (r.won)        { ms.wins++;  if (r.wonDay != null) ms.days.push(r.wonDay); }
+  else               ms.losses++;
+  ms.hTotal++;
+  if (r.handicapWon) { ms.hWins++; if (r.handicapWonDay != null) ms.hDays.push(r.handicapWonDay); }
+}
+for (const ms of Object.values(modStats)) {
+  ms.days.sort((a,b)=>a-b);
+  ms.hDays.sort((a,b)=>a-b);
+  ms.total     = ms.wins + ms.losses;
+  ms.medianDays = percentile(ms.days, 50);
+  ms.hWinRate  = ms.hTotal > 0 ? (ms.hWins / ms.hTotal * 100) : NaN;
+  ms.winRate   = ms.total > 0 ? ((ms.wins / ms.total) * 100).toFixed(1) : 'N/A';
+}
+for (const [mId, ms] of Object.entries(modStats)) {
+  if (ms.total === 0) continue;
+  const optFlag  = ms.losses === 0 ? '✓' : '❌';
+  const hFlag    = ms.hWinRate >= 70 ? '✓' : '❌';
+  const mratio   = isNaN(ms.medianDays) ? '?' : (ms.medianDays / COLLAPSE_TIMER_START).toFixed(2);
+  console.log(row(`  [${mId}] (n=${ms.total})`, `${ms.winRate}%`, optFlag));
+  console.log(row(`    opt-median (×timer)`,  ms.days.length ? `${ms.medianDays}d (${mratio}×)` : 'N/A'));
+  console.log(row(`    handicap win-rate`,    isNaN(ms.hWinRate) ? 'N/A' : `${ms.hWinRate.toFixed(1)}%`, hFlag));
+}
 console.log(`  └${'─'.repeat(28)}┴${'─'.repeat(18)}┘`);
 
 // ── Failure details ────────────────────────────────────────────────────────
@@ -762,6 +830,7 @@ if (deltaSeeds.length > 0) {
 // ── Knob advisor ───────────────────────────────────────────────────────────
 const advice = advisorMessage({
   fallbackCount:       fallbackSeeds.length,
+  totalRun:            TOTAL_RUN,
   totalLosses:         losses.length,
   lossReasons,
   comboStats,
@@ -789,14 +858,19 @@ const comboBadRatio = Object.entries(comboStats).filter(([,cs]) =>
 );
 const comboBadHandicap = Object.entries(comboStats).filter(([,cs]) => cs.handicappedWinRate < 70);
 
-const allGood = wins.length === SEED_COUNT &&
+const modBadWin = Object.entries(modStats).filter(([,ms]) => ms.total > 0 && ms.losses > 0);
+const modBadHandicap = Object.entries(modStats).filter(([,ms]) => ms.hTotal > 0 && ms.hWinRate < 70);
+
+const allGood = wins.length === TOTAL_RUN &&
                 !determinismFailed &&
                 nanSeeds.length === 0 &&
                 deltaSeeds.length === 0 &&
                 handicapWinRate >= 80 &&
                 comboBadHandicap.length === 0 &&
                 comboBadRatio.length === 0 &&
-                pacingRatio <= 1.6;
+                pacingRatio <= 1.6 &&
+                modBadWin.length === 0 &&
+                modBadHandicap.length === 0;
 
 if (allGood) {
   console.log('  ✅  ALL GATES PASSED');
@@ -807,7 +881,7 @@ if (allGood) {
   process.exit(0);
 } else {
   const failMsgs = [];
-  if (wins.length < SEED_COUNT)       failMsgs.push(`optimal win-rate ${winRate}% < 100%`);
+  if (wins.length < TOTAL_RUN)        failMsgs.push(`optimal win-rate ${winRate}% < 100%`);
   if (nanSeeds.length > 0)            failMsgs.push(`${nanSeeds.length} NaN/Infinity seeds`);
   if (deltaSeeds.length > 0)          failMsgs.push(`${deltaSeeds.length} clamp-violation seeds`);
   if (determinismFailed)              failMsgs.push('determinism failure');
@@ -815,6 +889,8 @@ if (allGood) {
   if (comboBadHandicap.length > 0)    failMsgs.push(`combos below 70% handicap: ${comboBadHandicap.map(([c])=>c).join(', ')}`);
   if (comboBadRatio.length > 0)       failMsgs.push(`combos outside [0.30–0.65] window: ${comboBadRatio.map(([c,cs])=>`${c}=${cs.medianDays}d`).join(', ')}`);
   if (pacingRatio > 1.6)              failMsgs.push(`pacing ratio ${pacingRatio.toFixed(2)} > 1.6`);
+  if (modBadWin.length > 0)          failMsgs.push(`modifiers with losses: ${modBadWin.map(([id])=>id).join(', ')}`);
+  if (modBadHandicap.length > 0)     failMsgs.push(`modifiers below 70% handicap: ${modBadHandicap.map(([id])=>id).join(', ')}`);
   console.log(`  ❌  GATES FAILED: ${failMsgs.join('; ')}`);
   console.log('      See KNOB ADVISOR above for remediation steps.\n');
   process.exit(1);

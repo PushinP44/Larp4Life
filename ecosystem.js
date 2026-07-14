@@ -492,7 +492,8 @@ export function runDailyStep(state) {
   state.meta.collapse_timer -= 1;
 
   // ── f. Daily resource income ──────────────────────────────────────────────
-  state.player.resources += DAILY_INCOME;
+  // Use modifier-adjusted income if set (state.meta.daily_income), else default.
+  state.player.resources += (state.meta.daily_income ?? DAILY_INCOME);
 
   // ── g. Win / lose evaluation ──────────────────────────────────────────────
   evaluateWinLose(state);
