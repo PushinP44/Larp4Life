@@ -522,6 +522,10 @@ function computeNextGuidance(state) {
  * renderCaptainBar(state) — create/update the #captain-bar DOM element.
  * Called every render tick. Never replaces the canvas (Law 1).
  */
+/** Signature of the last content written to the coach bar — lets us skip the
+ *  innerHTML rebuild when nothing changed (see renderCaptainBar). */
+let _lastCoachSig = null;
+
 function renderCaptainBar(state) {
   const container = document.getElementById('game-container');
   if (!container) return;
@@ -566,11 +570,21 @@ function renderCaptainBar(state) {
        >${escapeHTML(guidance.action.label)}</button>`
     : '';
 
-  bar.innerHTML = `
-    <span class="coach-icon">${guidance.icon}</span>
-    <span class="coach-text">${escapeHTML(guidance.text)}</span>
-    ${btnHTML}
-  `;
+  // Only rebuild the bar's DOM when the CONTENT changes. renderCaptainBar runs
+  // every animation frame; rewriting innerHTML each frame recreates the button
+  // between the user's mousedown and mouseup, so the click never fires (the bar
+  // was effectively unclickable). Gate the rebuild on a content signature.
+  const sig = [guidance.icon, guidance.text,
+    guidance.action?.do ?? '', guidance.action?.label ?? '',
+    guidance.action?.toolType ?? ''].join('\u001f');
+  if (sig !== _lastCoachSig) {
+    bar.innerHTML = `
+      <span class="coach-icon">${guidance.icon}</span>
+      <span class="coach-text">${escapeHTML(guidance.text)}</span>
+      ${btnHTML}
+    `;
+    _lastCoachSig = sig;
+  }
   bar.hidden = false;
 }
 
