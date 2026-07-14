@@ -32,6 +32,7 @@ import { buildNotebookHTML, getTopRecommendation }  from './notebook.js';
 import { escapeHTML, escapeAttr } from './safehtml.js';
 import { buildVendorHTML, applyIntervention } from './vendor.js';
 import { updateTier, loadDialogue, getPricedCost } from './hysteria.js';
+import { MISSIONS, CampaignState, buildCampaignHTML } from './campaign.js';
 import {
   loadAIContent, getFieldReportFragment, computeRunGrade,
   getAICodexEntry,
@@ -117,6 +118,7 @@ async function bootstrap() {
     loadDialogue(),
   ]);
 
+  CampaignState.load();
   GameState.load();
 
   const hasWorld = GameState.world &&
@@ -660,7 +662,10 @@ function showStartCard(previewSeed) {
           </span>
           ${modIsNone ? '' : `<br><span style="opacity:0.75;">${modDesc}</span>`}
         </div>
-        <button class="start-begin-btn" data-action="newgame">Begin</button>
+        <div class="start-btn-row">
+          <button class="start-begin-btn" data-action="newgame">Free Play</button>
+          <button class="start-campaign-btn" data-action="open-campaign">Campaign ▸</button>
+        </div>
         <p class="start-controls-hint">Move: WASD / arrows / click · Walk near wildlife to scan it<br>Space: end a day · F: fast-forward to the next change · N: notes · V: store</p>
       </div>
     </div>
@@ -821,6 +826,13 @@ function showDayResultBanner(prevHealth, newHealth, dayCount, resourceDelta = 0,
 /** Currently-selected biome for the next new game (set on the start card). */
 let _selectedBiome = 'coastal_wetland';
 
+/**
+ * The mission that is currently being played, or null for a free run.
+ * Set by the campaign-play action; checked by checkEndCondition to award completion.
+ * @type {{ id: string, title: string } | null}
+ */
+let _activeMission = null;
+
 async function newGame(seed, biomeKey = _selectedBiome) {
   showOverlay(`<div class="panel card"><h1>Generating World…</h1><p>Seed: ${escapeHTML(seed)}</p></div>`);
   await new Promise(r => setTimeout(r, 50));
@@ -930,8 +942,14 @@ window.addEventListener('ecosystemx:scan', (e) => {
 
 function checkEndCondition() {
   if (GameState.flags.win && overlay.hidden) {
+    // Award campaign mission completion before showing the win card.
+    if (_activeMission) {
+      CampaignState.complete(_activeMission.id);
+      _activeMission = null;
+    }
     setTimeout(showWinCard, 500);
   } else if (GameState.flags.lose && overlay.hidden) {
+    // Loss: keep _activeMission so the player can retry and try again.
     setTimeout(showLoseCard, 500);
   }
 }
@@ -974,6 +992,8 @@ overlay.addEventListener('click', async (e) => {
 
     // ── Start / Retry ─────────────────────────────────────────────────────
     case 'newgame': {
+      // Free-play run — no active mission.
+      _activeMission = null;
       // First user gesture — unlock audio context (browser autoplay policy)
       _unlockAudio();
       const seedInput = document.getElementById('seed-input');
@@ -984,6 +1004,7 @@ overlay.addEventListener('click', async (e) => {
 
     // ── Win/lose card: brand-new run with a fresh seed (same biome) ────────
     case 'new-seed': {
+      _activeMission = null;
       _unlockAudio();
       // UI input — Date.now() used ONLY to pick the seed, not in sim/generation
       const freshSeed = Math.max(1, Date.now() % 999999 || 1);
@@ -993,6 +1014,9 @@ overlay.addEventListener('click', async (e) => {
 
     // ── Win/lose card: replay the exact same world (same biome) ────────────
     case 'retry-seed': {
+      // Keep _activeMission: retry-seed replays the SAME seed, so if this was a
+      // lost campaign mission, retrying and winning should still credit it.
+      // (It's already null for free-play runs and after a win, so no false credit.)
       _unlockAudio();
       // seed stored in data-seed attribute, set when the card was rendered
       const replaySeed = Math.max(1, parseInt(btn.dataset.seed || '1', 10));
@@ -1006,6 +1030,38 @@ overlay.addEventListener('click', async (e) => {
     }
     case 'close': {
       hideOverlay();
+      break;
+    }
+
+    // ── Campaign panel ────────────────────────────────────────────────────
+    case 'open-campaign': {
+      showOverlay(buildCampaignHTML());
+      break;
+    }
+
+    case 'campaign-select': {
+      // Highlight a different mission in the campaign panel (no navigation away).
+      const missionId = btn.dataset.missionId;
+      if (missionId) showOverlay(buildCampaignHTML(missionId));
+      break;
+    }
+
+    case 'campaign-play': {
+      _unlockAudio();
+      const mId    = btn.dataset.missionId;
+      const mBiome = btn.dataset.biome;
+      const mSeed  = Math.max(1, parseInt(btn.dataset.seed || '1', 10));
+      const mDef   = MISSIONS.find(m => m.id === mId);
+      if (!mDef) { showStartCard(); break; }
+      _activeMission = { id: mDef.id, title: mDef.title };
+      _selectedBiome = mBiome === 'coral_reef' ? 'coral_reef' : 'coastal_wetland';
+      await newGame(mSeed, _selectedBiome);
+      break;
+    }
+
+    case 'campaign-close': {
+      // Return to the start card from the campaign panel.
+      showStartCard();
       break;
     }
 
