@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(graphify query *)",
+      "Bash(python -c \"import graphify; print\\('ok'\\)\")"
+    ]
+  }
+}
