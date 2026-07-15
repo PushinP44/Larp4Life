@@ -1,6 +1,6 @@
 {
   "_comment": "EdgeOne Pages deployment configuration for Ecosystem X: The Last Balance",
-  "_docs": "https://edgeone.ai/pages/docs",
+  "_docs": "https://pages.edgeone.ai/document/building-output-configuration",
 
   "project": {
     "name": "ecosystem-x",
@@ -10,12 +10,25 @@
     "entry_file": "index.html"
   },
 
+  "_deploy_exclusions": {
+    "_comment": "output_directory is repo root, so EdgeOne would publish EVERYTHING here by default — including security/PENTEST-REPORT.md, which must never be publicly reachable. Before going live: (1) check the EdgeOne Pages console for an ignore-file / deny-path / scoped-output-directory mechanism and use it to block /security/**, /.codebuddy/**, /.claude/**, /tools/**, and the root *.md design docs (README.md can stay); (2) if no such mechanism exists, move security/PENTEST-REPORT.md out of this repo (or into a separate private repo) before connecting it to EdgeOne Pages. Verify post-deploy: curl -I <site>/security/PENTEST-REPORT.md must return 404, not 200.",
+    "must_not_be_public": [
+      "security/PENTEST-REPORT.md",
+      "security/deploy-headers.md",
+      ".codebuddy/",
+      ".claude/"
+    ]
+  },
+
   "static_files": [
     "index.html",
     "style.css",
     "main.js",
+    "balance.js",
     "state.js",
     "prng.js",
+    "integrity.js",
+    "safehtml.js",
     "generator.js",
     "validator.js",
     "ecosystem.js",
@@ -24,6 +37,7 @@
     "input.js",
     "notebook.js",
     "vendor.js",
+    "campaign.js",
     "ai_content.js"
   ],
 
@@ -34,12 +48,17 @@
 
   "headers": [
     {
+      "_comment": "Must match _headers (repo root) and security/deploy-headers.md EXACTLY — that file is the PENTEST-verified source of truth (finding F1). If EdgeOne Pages doesn't auto-read the _headers file, configure these same values by hand under EdgeOne console → Rules → Response Headers. Do not weaken any of these.",
       "source": "/**",
       "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" },
+        { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
-        { "key": "X-XSS-Protection", "value": "1; mode=block" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=(), interest-cohort=()" },
+        { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains; preload" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Resource-Policy", "value": "same-origin" }
       ]
     },
     {
