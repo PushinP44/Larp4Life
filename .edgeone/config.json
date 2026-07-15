@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "routes": [
+    {
+      "src": "^/security(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/\\.codebuddy(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/\\.claude(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/tools(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/proposal(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/ai-prompts(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/codebuddy-prompts(/.*)?$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/(CODEBUDDY|CLAUDE|README|Ecosystem_X_Design_Solidified|CodeBuddy_Prompt_Roadmap|gemini-code-[^/]+)\\.md$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    {
+      "src": "^/package\\.json$",
+      "status": 403,
+      "headers": { "content-type": "text/plain" }
+    },
+    { "handle": "filesystem" }
+  ]
+}
